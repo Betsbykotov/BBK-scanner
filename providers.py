@@ -7,7 +7,7 @@ import random
 import urllib.parse
 import urllib.request
 
-from .models import OddsQuote
+from models import OddsQuote
 
 
 class ProviderError(RuntimeError):
@@ -102,46 +102,3 @@ class MockProvider(OddsProvider):
         for event_id, home, away in events:
             event_bias = 0.08 if event_id == "demo-001" else 0
             for idx, (book_key, book_title) in enumerate(books):
-                jitter = random.uniform(-0.035, 0.035)
-                book_bias = event_bias if book_key == "alpha" else 0
-                outcomes = [
-                    ("h2h", home, None, 1.85 + idx * 0.03 + jitter),
-                    ("h2h", "Draw", None, 3.45 + idx * 0.04 + jitter),
-                    ("h2h", away, None, 4.20 - idx * 0.05 + jitter),
-                    ("totals", "Over", 2.5, 1.88 + book_bias + idx * 0.02 + jitter),
-                    ("totals", "Under", 2.5, 1.96 - book_bias - idx * 0.01 - jitter),
-                ]
-                for market, outcome, point, price in outcomes:
-                    quotes.append(
-                        OddsQuote(
-                            event_id=event_id,
-                            sport_key="soccer_demo",
-                            commence_time="2026-08-01T19:00:00Z",
-                            home_team=home,
-                            away_team=away,
-                            bookmaker_key=book_key,
-                            bookmaker_title=book_title,
-                            market_key=market,
-                            outcome_name=outcome,
-                            point=point,
-                            price=round(price, 3),
-                            captured_at=captured_at,
-                        )
-                    )
-        return quotes
-
-
-def list_sports(api_key: str) -> list[dict]:
-    if not api_key:
-        raise ProviderError("ODDS_API_KEY не заполнен.")
-    query = urllib.parse.urlencode({"apiKey": api_key})
-    request = urllib.request.Request(
-        f"{TheOddsApiProvider.BASE_URL}/sports/?{query}",
-        headers={"User-Agent": "BBK-Scanner-MVP/0.1"},
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=30) as response:
-            data = json.loads(response.read().decode("utf-8"))
-    except Exception as exc:
-        raise ProviderError(f"Не удалось получить список видов спорта: {exc}") from exc
-    return data if isinstance(data, list) else []
