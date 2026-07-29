@@ -5,12 +5,12 @@ from datetime import datetime, timezone
 import sys
 import time
 
-from .analyzer import OddsAnalyzer
-from .config import Settings
-from .database import OddsDatabase
-from .models import Alert
-from .notifier import TelegramNotifier, format_alert
-from .providers import MockProvider, ProviderError, TheOddsApiProvider, list_sports
+from analyzer import OddsAnalyzer
+from config import Settings
+from database import OddsDatabase
+from models import Alert
+from notifier import TelegramNotifier, format_alert
+from providers import MockProvider, ProviderError, TheOddsApiProvider, list_sports
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -74,8 +74,6 @@ def run_cycle(
     all_alerts = analyzer.analyze(quotes)
     db.insert_quotes(quotes)
 
-    # Сначала режем по BBK Score (режим "только топ" и т.п.), потом по дедупу —
-    # так дедуп не тратит запись в базу на алерты, которые всё равно не пошлём.
     scored_alerts = [a for a in all_alerts if a.bbk_score >= min_score_to_notify]
     alerts = _dedup_alerts(db, scored_alerts, cooldown_minutes)
     skipped_by_score = len(all_alerts) - len(scored_alerts)
@@ -154,9 +152,6 @@ def main() -> int:
                     settings.cooldown_minutes, settings.min_score_to_notify,
                 )
             except (ProviderError, RuntimeError, ValueError) as exc:
-                # Одна неудачная итерация (сбой API, таймаут Telegram и т.п.)
-                # не должна убивать процесс на Railway — просто логируем и ждём
-                # следующий цикл.
                 _log(f"Ошибка в цикле сканирования: {exc}")
             except KeyboardInterrupt:
                 _log("Остановлено пользователем.")
