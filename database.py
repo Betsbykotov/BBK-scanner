@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import sqlite3
 
-from .models import OddsQuote
+from models import OddsQuote
 
 
 SCHEMA = """
@@ -66,64 +66,4 @@ class OddsDatabase:
                 rows,
             )
 
-    def previous_price(self, quote: OddsQuote, before_iso: str) -> float | None:
-        result = self.previous_quote(quote, before_iso)
-        return result[0] if result else None
-
-    def previous_quote(self, quote: OddsQuote, before_iso: str) -> tuple[float, str] | None:
-        """Возвращает (цена, captured_at) последнего снимка ДО before_iso.
-
-        Нужен и цена, и время снимка: BBK Score считает скорость движения
-        (% в минуту), а не только сам факт движения.
-        """
-        point_condition = "point IS NULL" if quote.point is None else "point = ?"
-        params: list[object] = [
-            quote.event_id, quote.bookmaker_key, quote.market_key, quote.outcome_name
-        ]
-        if quote.point is not None:
-            params.append(quote.point)
-        params.append(before_iso)
-        with self.connect() as conn:
-            row = conn.execute(
-                f"""
-                SELECT price, captured_at
-                FROM odds_snapshots
-                WHERE event_id = ?
-                  AND bookmaker_key = ?
-                  AND market_key = ?
-                  AND outcome_name = ?
-                  AND {point_condition}
-                  AND captured_at <= ?
-                ORDER BY captured_at DESC
-                LIMIT 1
-                """,
-                params,
-            ).fetchone()
-        return (float(row["price"]), str(row["captured_at"])) if row else None
-
-    def was_recently_sent(self, dedup_key: str, cooldown_minutes: int, now_iso: str) -> bool:
-        """Проверяет, отправлялся ли уже алерт с этим ключом внутри окна cooldown.
-
-        Ключ = конкретная линия у конкретного букмекера (event+market+outcome+
-        bookmaker). Так одно и то же движение не спамит каждый цикл сканирования,
-        но если линия продолжает жить дальше cooldown — алерт снова разрешён.
-        """
-        cutoff = (
-            datetime.fromisoformat(now_iso) - timedelta(minutes=cooldown_minutes)
-        ).isoformat()
-        with self.connect() as conn:
-            row = conn.execute(
-                "SELECT sent_at FROM sent_alerts WHERE dedup_key = ?",
-                (dedup_key,),
-            ).fetchone()
-        return bool(row and str(row["sent_at"]) > cutoff)
-
-    def mark_sent(self, dedup_key: str, sent_at: str) -> None:
-        with self.connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO sent_alerts (dedup_key, sent_at) VALUES (?, ?)
-                ON CONFLICT(dedup_key) DO UPDATE SET sent_at = excluded.sent_at
-                """,
-                (dedup_key, sent_at),
-            )
+    def previous_price(self, quote: OddsQ
