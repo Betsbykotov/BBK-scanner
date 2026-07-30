@@ -72,28 +72,4 @@ class OddsAnalyzer:
                     movements[quote.bookmaker_key] = pct_change(prev_price, quote.price)
                     elapsed = _elapsed_minutes(prev_captured_at, now_iso)
                     velocities[quote.bookmaker_key] = (
-                        abs(movements[quote.bookmaker_key]) / elapsed if elapsed > 0 else None
-                    )
-                    previous_map[quote.bookmaker_key] = prev_price
-                else:
-                    movements[quote.bookmaker_key] = None
-                    velocities[quote.bookmaker_key] = None
-                    previous_map[quote.bookmaker_key] = None
-
-            for quote in group:
-                previous = previous_map[quote.bookmaker_key]
-                movement = movements[quote.bookmaker_key]
-                velocity = velocities[quote.bookmaker_key]
-                deviation = (
-                    pct_change(market_average, quote.price)
-                    if market_average is not None
-                    else None
-                )
-
-                reasons: list[str] = []
-                if movement is not None and abs(movement) >= self.movement_threshold_pct:
-                    reasons.append(
-                        f"движение {movement:+.2f}% за период до {self.lookback_minutes} мин."
-                    )
-                if deviation is not None and abs(deviation) >= self.market_deviation_threshold_pct:
-                    reasons.append(f
+                        abs(
