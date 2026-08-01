@@ -17,8 +17,10 @@ def format_alert(alert: Alert) -> str:
         "н/д" if alert.velocity_pct_per_min is None else f"{alert.velocity_pct_per_min:.2f}%/мин"
     )
     sharp_mark = " 🎯 sharp-источник" if alert.is_sharp_source else ""
+    match_status = "🔴 LIVE" if q.is_live else "⏳ Прематч"
     return (
         f"{alert.bbk_tier} BBK SCORE: {alert.bbk_score:.0f}/100\n\n"
+        f"{match_status}\n"
         f"{q.home_team} — {q.away_team}\n"
         f"БК: {q.bookmaker_title}{sharp_mark}\n"
         f"Рынок: {q.market_key} | {q.outcome_name}{point}\n"
