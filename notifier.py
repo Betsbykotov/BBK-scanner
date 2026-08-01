@@ -53,4 +53,7 @@ class TelegramNotifier:
         try:
             with urllib.request.urlopen(request, timeout=20) as response:
                 result = json.loads(response.read().decode("utf-8"))
-        except Exception as ex
+        except Exception as exc:
+            raise RuntimeError(f"Ошибка отправки Telegram: {exc}") from exc
+        if not result.get("ok"):
+            raise RuntimeError(f"Telegram отклонил сообщение: {result}")
