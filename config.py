@@ -21,7 +21,7 @@ def load_dotenv(path: str = ".env") -> None:
 class Settings:
     odds_api_key: str
     odds_region: str
-    sport_key: str
+    sport_keys: tuple[str, ...]
     markets: tuple[str, ...]
     odds_format: str
     telegram_bot_token: str
@@ -44,7 +44,9 @@ class Settings:
         return cls(
             odds_api_key=os.getenv("ODDS_API_KEY", "").strip(),
             odds_region=os.getenv("ODDS_REGION", "eu").strip(),
-            sport_key=os.getenv("SPORT_KEY", "soccer_uefa_champs_league").strip(),
+            sport_keys=tuple(
+                x.strip() for x in os.getenv("SPORT_KEY", "soccer_brazil_campeonato").split(",") if x.strip()
+            ),
             markets=tuple(x.strip() for x in os.getenv("MARKETS", "h2h,totals").split(",") if x.strip()),
             odds_format=os.getenv("ODDS_FORMAT", "decimal").strip(),
             telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
