@@ -23,11 +23,20 @@ class OddsProvider(ABC):
 class TheOddsApiProvider(OddsProvider):
     BASE_URL = "https://api.the-odds-api.com/v4"
 
-    def __init__(self, api_key: str, sport_key: str, regions: str, markets: tuple[str, ...], odds_format: str):
+    def __init__(
+        self,
+        api_key: str,
+        sport_keys: tuple[str, ...],
+        regions: str,
+        markets: tuple[str, ...],
+        odds_format: str,
+    ):
         if not api_key:
             raise ProviderError("ODDS_API_KEY не заполнен.")
+        if not sport_keys:
+            raise ProviderError("Не указан ни один SPORT_KEY.")
         self.api_key = api_key
-        self.sport_key = sport_key
+        self.sport_keys = sport_keys
         self.regions = regions
         self.markets = markets
         self.odds_format = odds_format
@@ -44,9 +53,9 @@ class TheOddsApiProvider(OddsProvider):
         except Exception as exc:
             raise ProviderError(f"Ошибка API коэффициентов: {exc}") from exc
 
-    def fetch(self) -> list[OddsQuote]:
+    def _fetch_one(self, sport_key: str) -> list[OddsQuote]:
         data = self._get_json(
-            f"/sports/{urllib.parse.quote(self.sport_key)}/odds/",
+            f"/sports/{urllib.parse.quote(sport_key)}/odds/",
             {
                 "apiKey": self.api_key,
                 "regions": self.regions,
@@ -56,7 +65,7 @@ class TheOddsApiProvider(OddsProvider):
             },
         )
         if not isinstance(data, list):
-            raise ProviderError("API вернул неожиданный формат данных.")
+            raise ProviderError(f"API вернул неожиданный формат данных для {sport_key}.")
 
         captured_at = datetime.now(timezone.utc).isoformat()
         quotes: list[OddsQuote] = []
@@ -71,7 +80,7 @@ class TheOddsApiProvider(OddsProvider):
                         quotes.append(
                             OddsQuote(
                                 event_id=str(event["id"]),
-                                sport_key=str(event.get("sport_key", self.sport_key)),
+                                sport_key=str(event.get("sport_key", sport_key)),
                                 commence_time=str(event.get("commence_time", "")),
                                 home_team=str(event.get("home_team", "")),
                                 away_team=str(event.get("away_team", "")),
@@ -85,6 +94,20 @@ class TheOddsApiProvider(OddsProvider):
                             )
                         )
         return quotes
+
+    def fetch(self) -> list[OddsQuote]:
+        all_quotes: list[OddsQuote] = []
+        errors: list[str] = []
+        for sport_key in self.sport_keys:
+            try:
+                all_quotes.extend(self._fetch_one(sport_key))
+            except ProviderError as exc:
+                # Один турнир может быть не в сезоне или временно недоступен —
+                # не роняем весь цикл сканирования из-за одного плохого ключа.
+                errors.append(f"{sport_key}: {exc}")
+        if errors and not all_quotes:
+            raise ProviderError("Все турниры не удалось получить: " + "; ".join(errors))
+        return all_quotes
 
 
 class MockProvider(OddsProvider):
