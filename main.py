@@ -74,6 +74,8 @@ def run_cycle(
     all_alerts = analyzer.analyze(quotes)
     db.insert_quotes(quotes)
 
+    # Сначала режем по BBK Score (режим "только топ" и т.п.), потом по дедупу —
+    # так дедуп не тратит запись в базу на алерты, которые всё равно не пошлём.
     scored_alerts = [a for a in all_alerts if a.bbk_score >= min_score_to_notify]
     alerts = _dedup_alerts(db, scored_alerts, cooldown_minutes)
     skipped_by_score = len(all_alerts) - len(scored_alerts)
@@ -113,7 +115,7 @@ def main() -> int:
             if args.provider == "mock"
             else TheOddsApiProvider(
                 api_key=settings.odds_api_key,
-                sport_key=settings.sport_key,
+                sport_keys=settings.sport_keys,
                 regions=settings.odds_region,
                 markets=settings.markets,
                 odds_format=settings.odds_format,
@@ -152,6 +154,9 @@ def main() -> int:
                     settings.cooldown_minutes, settings.min_score_to_notify,
                 )
             except (ProviderError, RuntimeError, ValueError) as exc:
+                # Одна неудачная итерация (сбой API, таймаут Telegram и т.п.)
+                # не должна убивать процесс на Railway — просто логируем и ждём
+                # следующий цикл.
                 _log(f"Ошибка в цикле сканирования: {exc}")
             except KeyboardInterrupt:
                 _log("Остановлено пользователем.")
