@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import sys
 import time
 
@@ -11,6 +11,25 @@ from database import OddsDatabase
 from models import Alert
 from notifier import TelegramNotifier, format_alert
 from providers import MockProvider, ProviderError, TheOddsApiProvider, list_sports
+
+
+def _filter_by_horizon(quotes: list, hours_ahead_limit: float) -> list:
+    """Оставляет только матчи, которые уже идут (LIVE), или начнутся в ближайшие
+    hours_ahead_limit часов. Матчи через неделю/месяц просто выбрасываются
+    до анализа — незачем тратить на них расчёты и кредиты API.
+    """
+    now = datetime.now(timezone.utc)
+    horizon = timedelta(hours=hours_ahead_limit)
+    kept = []
+    for quote in quotes:
+        try:
+            commence = datetime.fromisoformat(quote.commence_time.replace("Z", "+00:00"))
+        except ValueError:
+            kept.append(quote)  # не смогли распарсить дату — на всякий случай не выбрасываем
+            continue
+        if quote.is_live or commence - now <= horizon:
+            kept.append(quote)
+    return kept
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -69,8 +88,10 @@ def run_cycle(
     notifier: TelegramNotifier,
     cooldown_minutes: int,
     min_score_to_notify: float = 0.0,
+    hours_ahead_limit: float = 24.0,
 ) -> None:
-    quotes = provider.fetch()
+    all_quotes = provider.fetch()
+    quotes = _filter_by_horizon(all_quotes, hours_ahead_limit)
     all_alerts = analyzer.analyze(quotes)
     db.insert_quotes(quotes)
 
@@ -82,7 +103,8 @@ def run_cycle(
     skipped_by_dedup = len(scored_alerts) - len(alerts)
 
     _log(
-        f"Коэффициентов: {len(quotes)} | Алертов найдено: {len(all_alerts)} "
+        f"Получено: {len(all_quotes)} | В горизонте {hours_ahead_limit:.0f}ч: {len(quotes)} "
+        f"| Алертов найдено: {len(all_alerts)} "
         f"| Ниже порога score: {skipped_by_score} | Повтор (дедуп): {skipped_by_dedup} "
         f"| Отправлено: {len(alerts)}"
     )
@@ -142,6 +164,7 @@ def main() -> int:
             run_cycle(
                 provider, db, analyzer, notifier,
                 settings.cooldown_minutes, settings.min_score_to_notify,
+                settings.hours_ahead_limit,
             )
             return 0
 
@@ -152,6 +175,7 @@ def main() -> int:
                 run_cycle(
                     provider, db, analyzer, notifier,
                     settings.cooldown_minutes, settings.min_score_to_notify,
+                    settings.hours_ahead_limit,
                 )
             except (ProviderError, RuntimeError, ValueError) as exc:
                 # Одна неудачная итерация (сбой API, таймаут Telegram и т.п.)

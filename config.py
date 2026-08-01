@@ -37,6 +37,7 @@ class Settings:
     cooldown_minutes: int
     poll_interval_minutes: int
     min_score_to_notify: float
+    hours_ahead_limit: float
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -64,4 +65,5 @@ class Settings:
             cooldown_minutes=int(os.getenv("COOLDOWN_MINUTES", "60")),
             poll_interval_minutes=int(os.getenv("POLL_INTERVAL_MINUTES", "5")),
             min_score_to_notify=float(os.getenv("MIN_SCORE_TO_NOTIFY", "0")),
+            hours_ahead_limit=float(os.getenv("HOURS_AHEAD_LIMIT", "24")),
         )
