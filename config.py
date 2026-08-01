@@ -42,14 +42,14 @@ class Settings:
     def from_env(cls) -> "Settings":
         load_dotenv()
         return cls(
-            odds_api_key=os.getenv("ODDS_API_KEY", ""),
-            odds_region=os.getenv("ODDS_REGION", "eu"),
-            sport_key=os.getenv("SPORT_KEY", "soccer_uefa_champs_league"),
+            odds_api_key=os.getenv("ODDS_API_KEY", "").strip(),
+            odds_region=os.getenv("ODDS_REGION", "eu").strip(),
+            sport_key=os.getenv("SPORT_KEY", "soccer_uefa_champs_league").strip(),
             markets=tuple(x.strip() for x in os.getenv("MARKETS", "h2h,totals").split(",") if x.strip()),
-            odds_format=os.getenv("ODDS_FORMAT", "decimal"),
-            telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
-            telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", ""),
-            database_path=os.getenv("DATABASE_PATH", "data/bbk_scanner.db"),
+            odds_format=os.getenv("ODDS_FORMAT", "decimal").strip(),
+            telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
+            telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", "").strip(),
+            database_path=os.getenv("DATABASE_PATH", "data/bbk_scanner.db").strip(),
             movement_threshold_pct=float(os.getenv("MOVEMENT_THRESHOLD_PCT", "8")),
             market_deviation_threshold_pct=float(os.getenv("MARKET_DEVIATION_THRESHOLD_PCT", "6")),
             lookback_minutes=int(os.getenv("LOOKBACK_MINUTES", "30")),
