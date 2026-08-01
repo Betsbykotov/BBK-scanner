@@ -24,6 +24,16 @@ class OddsQuote:
         point = "" if self.point is None else f":{self.point:g}"
         return f"{self.event_id}:{self.market_key}:{self.outcome_name}{point}"
 
+    @property
+    def is_live(self) -> bool:
+        """Матч уже начался на момент снятия этой котировки (LIVE), а не прематч."""
+        try:
+            commence = datetime.fromisoformat(self.commence_time.replace("Z", "+00:00"))
+            captured = datetime.fromisoformat(self.captured_at.replace("Z", "+00:00"))
+        except ValueError:
+            return False
+        return captured >= commence
+
     @classmethod
     def now(cls, **kwargs) -> "OddsQuote":
         return cls(captured_at=datetime.now(timezone.utc).isoformat(), **kwargs)
