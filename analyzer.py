@@ -54,7 +54,7 @@ class OddsAnalyzer:
             datetime.now(timezone.utc) - timedelta(minutes=self.lookback_minutes)
         ).isoformat()
 
-        alerts: list[Alert] = []
+        candidates: list[Alert] = []
         for group in grouped.values():
             market_average = (
                 sum(q.price for q in group) / len(group)
@@ -136,7 +136,7 @@ class OddsAnalyzer:
                     self.score_weights,
                 )
 
-                alerts.append(
+                candidates.append(
                     Alert(
                         quote=quote,
                         previous_price=previous,
@@ -152,5 +152,16 @@ class OddsAnalyzer:
                     )
                 )
 
+        # Один алерт на selection_key (матч+рынок+исход) за цикл — берём
+        # лучший по BBK score, чтобы не спамить одним и тем же движением
+        # рынка от каждого букмекера по отдельности.
+        best_by_selection: dict[str, Alert] = {}
+        for alert in candidates:
+            key = alert.quote.selection_key
+            current_best = best_by_selection.get(key)
+            if current_best is None or alert.bbk_score > current_best.bbk_score:
+                best_by_selection[key] = alert
+
+        alerts = list(best_by_selection.values())
         alerts.sort(key=lambda a: a.bbk_score, reverse=True)
         return alerts
