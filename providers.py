@@ -4,10 +4,18 @@ from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 import json
 import random
+import re
+import threading
+import time as time_module
 import urllib.parse
 import urllib.request
 
 from models import OddsQuote
+
+try:
+    import websocket  # пакет "websocket-client"
+except ImportError:
+    websocket = None
 
 
 class ProviderError(RuntimeError):
@@ -102,8 +110,6 @@ class TheOddsApiProvider(OddsProvider):
             try:
                 all_quotes.extend(self._fetch_one(sport_key))
             except ProviderError as exc:
-                # Один турнир может быть не в сезоне или временно недоступен —
-                # не роняем весь цикл сканирования из-за одного плохого ключа.
                 errors.append(f"{sport_key}: {exc}")
         if errors and not all_quotes:
             raise ProviderError("Все турниры не удалось получить: " + "; ".join(errors))
@@ -168,3 +174,79 @@ def list_sports(api_key: str) -> list[dict]:
     except Exception as exc:
         raise ProviderError(f"Не удалось получить список видов спорта: {exc}") from exc
     return data if isinstance(data, list) else []
+
+
+_WIN_RE = re.compile(r"^WIN__(P1|P2|X)$")
+_TOTALS_RE = re.compile(r"^TOTALS__(OVER|UNDER)\(([\d.]+)\)$")
+
+
+class OddscorpProvider(OddsProvider):
+    """Push-фид ODDSCORP по WebSocket. В отличие от TheOddsApiProvider,
+    держит постоянное соединение в фоновом потоке на каждую БК.
+    fetch() не делает сетевой запрос — отдаёт снимок накопленных данных."""
+
+    def __init__(
+        self,
+        auth_key: str,
+        bookmakers: tuple[str, ...],
+        ws_url: str = "ws://api.oddscorp.com:8001",
+        initial_wait_seconds: float = 5.0,
+    ):
+        if websocket is None:
+            raise ProviderError("Пакет 'websocket-client' не установлен — добавьте в requirements.txt.")
+        if not auth_key:
+            raise ProviderError("ODDSCORP_AUTH_KEY не заполнен.")
+        if not bookmakers:
+            raise ProviderError("ODDSCORP_BOOKMAKERS пуст.")
+
+        self.auth_key = auth_key
+        self.bookmakers = bookmakers
+        self.ws_url = ws_url
+
+        self._lock = threading.Lock()
+        self._events: dict[str, dict] = {}
+        self._markets: dict[str, dict[str, float]] = {}
+        self._bk_by_event: dict[str, str] = {}
+
+        for bk in self.bookmakers:
+            threading.Thread(target=self._run_socket, args=(bk,), daemon=True).start()
+
+        if initial_wait_seconds > 0:
+            time_module.sleep(initial_wait_seconds)
+
+    def _run_socket(self, bk: str) -> None:
+        subscribe_msg = json.dumps({
+            "cmd": "subscribe",
+            "auth_key": self.auth_key,
+            "needed_bk": [bk],
+            "send_events_ids": True,
+            "send_actual_first": True,
+        })
+        while True:
+            try:
+                ws = websocket.WebSocketApp(
+                    self.ws_url,
+                    on_open=lambda w: w.send(subscribe_msg),
+                    on_message=lambda w, msg: self._on_message(msg),
+                )
+                ws.run_forever(ping_interval=None)
+            except Exception:
+                pass
+            time_module.sleep(5)
+
+    def _on_message(self, raw: str) -> None:
+        try:
+            payload = json.loads(raw)
+        except (ValueError, TypeError):
+            return
+        if isinstance(payload, dict) or not isinstance(payload, list) or len(payload) < 4:
+            return
+
+        bk_name, msg_type, bk_event_id, data = payload[0], payload[1], payload[2], payload[3]
+
+        with self._lock:
+            if msg_type == "update_event" and isinstance(data, dict):
+                self._events[bk_event_id] = data
+                self._bk_by_event[bk_event_id] = bk_name
+            elif msg_type == "update_markets" and isinstance(data, list):
+                b
