@@ -207,12 +207,20 @@ class OddscorpProvider(OddsProvider):
         self._events: dict[str, dict] = {}
         self._markets: dict[str, dict[str, float]] = {}
         self._bk_by_event: dict[str, str] = {}
+        self._message_count = 0
 
         for bk in self.bookmakers:
             threading.Thread(target=self._run_socket, args=(bk,), daemon=True).start()
 
         if initial_wait_seconds > 0:
             time_module.sleep(initial_wait_seconds)
+
+        with self._lock:
+            print(
+                f"[oddscorp] после {initial_wait_seconds}с ожидания: "
+                f"событий={len(self._events)}, сообщений всего={self._message_count}",
+                flush=True,
+            )
 
     def _run_socket(self, bk: str) -> None:
         subscribe_msg = json.dumps({
@@ -222,16 +230,30 @@ class OddscorpProvider(OddsProvider):
             "send_events_ids": True,
             "send_actual_first": True,
         })
+
+        def on_open(w):
+            print(f"[oddscorp] соединение открыто для {bk}, отправляю subscribe", flush=True)
+            w.send(subscribe_msg)
+
+        def on_error(w, error):
+            print(f"[oddscorp] ошибка сокета для {bk}: {error}", flush=True)
+
+        def on_close(w, close_status_code, close_msg):
+            print(f"[oddscorp] соединение закрыто для {bk}: {close_status_code} {close_msg}", flush=True)
+
         while True:
             try:
+                print(f"[oddscorp] подключаюсь к {self.ws_url} для {bk}...", flush=True)
                 ws = websocket.WebSocketApp(
                     self.ws_url,
-                    on_open=lambda w: w.send(subscribe_msg),
+                    on_open=on_open,
                     on_message=lambda w, msg: self._on_message(msg),
+                    on_error=on_error,
+                    on_close=on_close,
                 )
                 ws.run_forever(ping_interval=None)
-            except Exception:
-                pass
+            except Exception as exc:
+                print(f"[oddscorp] исключение в сокете {bk}: {exc}", flush=True)
             time_module.sleep(5)
 
     def _on_message(self, raw: str) -> None:
@@ -239,12 +261,18 @@ class OddscorpProvider(OddsProvider):
             payload = json.loads(raw)
         except (ValueError, TypeError):
             return
-        if isinstance(payload, dict) or not isinstance(payload, list) or len(payload) < 4:
+        if isinstance(payload, dict):
+            return  # ping-сообщение
+        if not isinstance(payload, list) or len(payload) < 4:
             return
 
         bk_name, msg_type, bk_event_id, data = payload[0], payload[1], payload[2], payload[3]
 
         with self._lock:
+            self._message_count += 1
+            if self._message_count <= 3:
+                print(f"[oddscorp] пример сообщения #{self._message_count}: {raw[:500]}", flush=True)
+
             if msg_type == "update_event" and isinstance(data, dict):
                 self._events[bk_event_id] = data
                 self._bk_by_event[bk_event_id] = bk_name
