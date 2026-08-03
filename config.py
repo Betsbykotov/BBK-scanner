@@ -41,6 +41,8 @@ class Settings:
     oddscorp_auth_key: str
     oddscorp_ws_url: str
     oddscorp_bookmakers: tuple[str, ...]
+    league_blacklist: tuple[str, ...]  # NEW: подстроки в названии лиги — если совпало, событие выкидывается
+    league_whitelist: tuple[str, ...]  # NEW: если не пусто — оставляем ТОЛЬКО лиги, где есть совпадение
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -73,5 +75,11 @@ class Settings:
             oddscorp_ws_url=os.getenv("ODDSCORP_WS_URL", "ws://api.oddscorp.com:8001").strip(),
             oddscorp_bookmakers=tuple(
                 x.strip() for x in os.getenv("ODDSCORP_BOOKMAKERS", "bet365:prematch,parimatch_com:prematch").split(",") if x.strip()
+            ),
+            league_blacklist=tuple(
+                x.strip().lower() for x in os.getenv("LEAGUE_BLACKLIST", "esoccer,replays,e-soccer,simulated").split(",") if x.strip()
+            ),
+            league_whitelist=tuple(
+                x.strip().lower() for x in os.getenv("LEAGUE_WHITELIST", "").split(",") if x.strip()
             ),
         )

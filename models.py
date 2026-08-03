@@ -18,6 +18,7 @@ class OddsQuote:
     point: float | None
     price: float
     captured_at: str
+    league_name: str = ""  # NEW: имя лиги/турнира, если провайдер его отдаёт (пусто, если нет)
 
     @property
     def selection_key(self) -> str:

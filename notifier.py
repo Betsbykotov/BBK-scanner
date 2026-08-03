@@ -37,8 +37,9 @@ def format_alert(alert: Alert) -> str:
         "н/д" if alert.velocity_pct_per_min is None else f"{alert.velocity_pct_per_min:.2f}%/мин"
     )
     sharp_mark = " 🎯 <i>sharp-источник</i>" if alert.is_sharp_source else ""
-    match_status = "🔴 <b>LIVE</b>" if q.is_live else "⏳ <b>Прематч</b>"
+    match_status = "🔴 <b>LIVE</b> ⚽" if q.is_live else "⏳ <b>Прематч</b>"
     kickoff = _format_kickoff(q.commence_time)
+    league_line = f"🌍 {_esc(q.league_name)}\n" if q.league_name else ""
 
     # Заголовок: тир + score одной строкой, крупно и понятно с первого взгляда.
     header = f"{alert.bbk_tier} <b>BBK SCORE: {alert.bbk_score:.0f}/100</b>"
@@ -50,7 +51,8 @@ def format_alert(alert: Alert) -> str:
     return (
         f"{header}\n"
         f"{match_status}\n"
-        f"🕐 Начало: {kickoff}\n\n"
+        f"🕐 Начало: {kickoff}\n"
+        f"{league_line}\n"
         f"<b>⚽ {_esc(q.home_team)} — {_esc(q.away_team)}</b>\n"
         f"🏦 {_esc(q.bookmaker_title)}{sharp_mark}\n"
         f"📍 Рынок: {market_line}\n\n"

@@ -99,6 +99,7 @@ class TheOddsApiProvider(OddsProvider):
                                 point=float(point) if isinstance(point, (int, float)) else None,
                                 price=float(price),
                                 captured_at=captured_at,
+                                league_name="",
                             )
                         )
         return quotes
@@ -153,6 +154,7 @@ class MockProvider(OddsProvider):
                             point=point,
                             price=round(price, 3),
                             captured_at=captured_at,
+                            league_name="Demo League",
                         )
                     )
         return quotes
@@ -352,6 +354,8 @@ class OddscorpProvider(OddsProvider):
             bk_name = str(event.get("bk_name", self._bk_by_event.get(bk_event_id, "")))
             event_id_out = grouped_snapshot.get(bk_event_id) or bk_event_id
             commence_time = self._parse_commence_time(event)
+            # NEW: имя лиги/турнира — приходит от OddsCorp напрямую в событии.
+            league_name = str(event.get("league_name", ""))
 
             for market_name, price in markets.items():
                 win_match = _WIN_RE.match(market_name)
@@ -382,6 +386,7 @@ class OddscorpProvider(OddsProvider):
                         point=point,
                         price=price,
                         captured_at=captured_at,
+                        league_name=league_name,
                     )
                 )
         return quotes

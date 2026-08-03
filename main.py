@@ -28,6 +28,33 @@ def _filter_by_horizon(quotes: list, hours_ahead_limit: float) -> list:
     return kept
 
 
+def _filter_by_league(quotes: list, whitelist: tuple[str, ...], blacklist: tuple[str, ...]) -> list:
+    """Фильтр по названию лиги (регистронезависимый поиск подстроки).
+
+    - blacklist: если название лиги СОДЕРЖИТ любую из подстрок — событие выкидывается
+      (например "esoccer", "replays" — мусорные/не настоящие матчи).
+    - whitelist: если список не пуст — оставляем ТОЛЬКО события, где лига содержит
+      хотя бы одну из подстрок (например "premier league", "brasileirao").
+      Если whitelist пуст — этот фильтр не применяется вообще.
+
+    Если у котировки нет league_name (пусто) — она проходит blacklist, но НЕ проходит
+    непустой whitelist (нет данных = не можем подтвердить, что лига разрешена).
+    """
+    kept = []
+    for quote in quotes:
+        league_lower = (quote.league_name or "").lower()
+
+        if blacklist and any(bad in league_lower for bad in blacklist):
+            continue
+
+        if whitelist:
+            if not league_lower or not any(good in league_lower for good in whitelist):
+                continue
+
+        kept.append(quote)
+    return kept
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="BBK Scanner MVP")
     parser.add_argument(
@@ -84,9 +111,12 @@ def run_cycle(
     cooldown_minutes: int,
     min_score_to_notify: float = 0.0,
     hours_ahead_limit: float = 24.0,
+    league_whitelist: tuple[str, ...] = (),
+    league_blacklist: tuple[str, ...] = (),
 ) -> None:
     all_quotes = provider.fetch()
     quotes = _filter_by_horizon(all_quotes, hours_ahead_limit)
+    quotes = _filter_by_league(quotes, league_whitelist, league_blacklist)
     all_alerts = analyzer.analyze(quotes)
     db.insert_quotes(quotes)
 
@@ -163,6 +193,7 @@ def main() -> int:
                 provider, db, analyzer, notifier,
                 settings.cooldown_minutes, settings.min_score_to_notify,
                 settings.hours_ahead_limit,
+                settings.league_whitelist, settings.league_blacklist,
             )
             return 0
 
@@ -174,6 +205,7 @@ def main() -> int:
                     provider, db, analyzer, notifier,
                     settings.cooldown_minutes, settings.min_score_to_notify,
                     settings.hours_ahead_limit,
+                    settings.league_whitelist, settings.league_blacklist,
                 )
             except (ProviderError, RuntimeError, ValueError) as exc:
                 _log(f"Ошибка в цикле сканирования: {exc}")
