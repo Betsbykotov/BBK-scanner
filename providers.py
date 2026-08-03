@@ -249,4 +249,75 @@ class OddscorpProvider(OddsProvider):
                 self._events[bk_event_id] = data
                 self._bk_by_event[bk_event_id] = bk_name
             elif msg_type == "update_markets" and isinstance(data, list):
-                b
+                bucket = self._markets.setdefault(bk_event_id, {})
+                for row in data:
+                    if not row:
+                        continue
+                    name = row[0]
+                    blocked = row[1] if len(row) > 1 else 0
+                    price = row[2] if len(row) > 2 else None
+                    if blocked or price is None:
+                        continue
+                    try:
+                        bucket[name] = float(price)
+                    except (TypeError, ValueError):
+                        continue
+            elif msg_type == "remove_markets" and isinstance(data, list):
+                bucket = self._markets.get(bk_event_id)
+                if bucket:
+                    for name in data:
+                        bucket.pop(name, None)
+            elif msg_type in ("remove_event", "remove_event_final"):
+                self._events.pop(bk_event_id, None)
+                self._markets.pop(bk_event_id, None)
+                self._bk_by_event.pop(bk_event_id, None)
+
+    def fetch(self) -> list[OddsQuote]:
+        captured_at = datetime.now(timezone.utc).isoformat()
+        quotes: list[OddsQuote] = []
+
+        with self._lock:
+            events_snapshot = dict(self._events)
+            markets_snapshot = {k: dict(v) for k, v in self._markets.items()}
+
+        for bk_event_id, event in events_snapshot.items():
+            markets = markets_snapshot.get(bk_event_id, {})
+            if not markets:
+                continue
+            home = str(event.get("team1", ""))
+            away = str(event.get("team2", ""))
+            sport = str(event.get("sport", ""))
+            bk_name = str(event.get("bk_name", self._bk_by_event.get(bk_event_id, "")))
+
+            for market_name, price in markets.items():
+                win_match = _WIN_RE.match(market_name)
+                totals_match = _TOTALS_RE.match(market_name)
+                if win_match:
+                    market_key = "h2h"
+                    code = win_match.group(1)
+                    outcome_name = home if code == "P1" else away if code == "P2" else "Draw"
+                    point = None
+                elif totals_match:
+                    market_key = "totals"
+                    outcome_name = totals_match.group(1).capitalize()
+                    point = float(totals_match.group(2))
+                else:
+                    continue
+
+                quotes.append(
+                    OddsQuote(
+                        event_id=str(bk_event_id),
+                        sport_key=sport,
+                        commence_time="",
+                        home_team=home,
+                        away_team=away,
+                        bookmaker_key=bk_name,
+                        bookmaker_title=bk_name,
+                        market_key=market_key,
+                        outcome_name=outcome_name,
+                        point=point,
+                        price=price,
+                        captured_at=captured_at,
+                    )
+                )
+        return quotes
