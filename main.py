@@ -125,6 +125,18 @@ def run_cycle(
     skipped_by_score = len(all_alerts) - len(scored_alerts)
     skipped_by_dedup = len(scored_alerts) - len(alerts)
 
+    # ВРЕМЕННЫЙ ДЕБАГ: топ-5 алертов по score КАЖДЫЙ цикл, независимо от порога,
+    # чтобы можно было сверить с реальными матчами в БК. Удалить после проверки.
+    top_debug = sorted(all_alerts, key=lambda a: a.bbk_score, reverse=True)[:5]
+    for a in top_debug:
+        q = a.quote
+        status = "LIVE" if q.is_live else "prematch"
+        _log(
+            f"[DEBUG top] score={a.bbk_score:.0f} [{status}] {q.home_team} — {q.away_team} "
+            f"| {q.bookmaker_title} | {q.market_key} {q.outcome_name} | "
+            f"цена={q.price:.3f} | движение={a.movement_pct} | лига={q.league_name}"
+        )
+
     _log(
         f"Получено: {len(all_quotes)} | В горизонте {hours_ahead_limit:.0f}ч: {len(quotes)} "
         f"| Алертов найдено: {len(all_alerts)} "
