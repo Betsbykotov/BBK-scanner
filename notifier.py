@@ -4,12 +4,27 @@ import html
 import json
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone, timedelta
 
 from models import Alert
 
 
 def _esc(text: str) -> str:
     return html.escape(str(text), quote=False)
+
+
+_ODESSA_TZ = timezone(timedelta(hours=3))
+
+
+def _format_kickoff(commence_time: str) -> str:
+    if not commence_time:
+        return "время неизвестно"
+    try:
+        dt = datetime.fromisoformat(commence_time.replace("Z", "+00:00"))
+        dt_local = dt.astimezone(_ODESSA_TZ)
+        return dt_local.strftime("%d.%m.%Y %H:%M")
+    except ValueError:
+        return "время неизвестно"
 
 
 def format_alert(alert: Alert) -> str:
@@ -23,6 +38,7 @@ def format_alert(alert: Alert) -> str:
     )
     sharp_mark = " 🎯 <i>sharp-источник</i>" if alert.is_sharp_source else ""
     match_status = "🔴 <b>LIVE</b>" if q.is_live else "⏳ <b>Прематч</b>"
+    kickoff = _format_kickoff(q.commence_time)
 
     # Заголовок: тир + score одной строкой, крупно и понятно с первого взгляда.
     header = f"{alert.bbk_tier} <b>BBK SCORE: {alert.bbk_score:.0f}/100</b>"
@@ -33,7 +49,8 @@ def format_alert(alert: Alert) -> str:
 
     return (
         f"{header}\n"
-        f"{match_status}\n\n"
+        f"{match_status}\n"
+        f"🕐 Начало: {kickoff}\n\n"
         f"<b>⚽ {_esc(q.home_team)} — {_esc(q.away_team)}</b>\n"
         f"🏦 {_esc(q.bookmaker_title)}{sharp_mark}\n"
         f"📍 Рынок: {market_line}\n\n"
