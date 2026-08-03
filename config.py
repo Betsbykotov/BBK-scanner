@@ -38,6 +38,9 @@ class Settings:
     poll_interval_minutes: int
     min_score_to_notify: float
     hours_ahead_limit: float
+    oddscorp_auth_key: str
+    oddscorp_ws_url: str
+    oddscorp_bookmakers: tuple[str, ...]
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -66,4 +69,9 @@ class Settings:
             poll_interval_minutes=int(os.getenv("POLL_INTERVAL_MINUTES", "5")),
             min_score_to_notify=float(os.getenv("MIN_SCORE_TO_NOTIFY", "0")),
             hours_ahead_limit=float(os.getenv("HOURS_AHEAD_LIMIT", "24")),
+            oddscorp_auth_key=os.getenv("ODDSCORP_AUTH_KEY", "").strip(),
+            oddscorp_ws_url=os.getenv("ODDSCORP_WS_URL", "ws://api.oddscorp.com:8001").strip(),
+            oddscorp_bookmakers=tuple(
+                x.strip() for x in os.getenv("ODDSCORP_BOOKMAKERS", "bet365:prematch,parimatch_com:prematch").split(",") if x.strip()
+            ),
         )
