@@ -1,69 +1,48 @@
-from __future__ import annotations
-
-from dataclasses import dataclass
-from pathlib import Path
 import os
 
 
-def load_dotenv(path: str = ".env") -> None:
-    env_path = Path(path)
-    if not env_path.exists():
-        return
-    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        os.environ.setdefault(key.strip(), value.strip())
+def _env(key, default=None):
+    val = os.environ.get(key, default)
+    if val is not None:
+        val = val.strip()
+    return val
 
 
-@dataclass(frozen=True)
-class Settings:
-    odds_api_key: str
-    odds_region: str
-    sport_keys: tuple[str, ...]
-    markets: tuple[str, ...]
-    odds_format: str
-    telegram_bot_token: str
-    telegram_chat_id: str
-    database_path: str
-    movement_threshold_pct: float
-    market_deviation_threshold_pct: float
-    lookback_minutes: int
-    min_bookmakers: int
-    velocity_threshold_pct_per_min: float
-    sharp_bookmakers: tuple[str, ...]
-    sharp_bonus_multiplier: float
-    cooldown_minutes: int
-    poll_interval_minutes: int
-    min_score_to_notify: float
-    hours_ahead_limit: float
+def _env_int(key, default):
+    val = _env(key)
+    return int(val) if val not in (None, "") else default
 
-    @classmethod
-    def from_env(cls) -> "Settings":
-        load_dotenv()
-        return cls(
-            odds_api_key=os.getenv("ODDS_API_KEY", "").strip(),
-            odds_region=os.getenv("ODDS_REGION", "eu").strip(),
-            sport_keys=tuple(
-                x.strip() for x in os.getenv("SPORT_KEY", "soccer_brazil_campeonato").split(",") if x.strip()
-            ),
-            markets=tuple(x.strip() for x in os.getenv("MARKETS", "h2h,totals").split(",") if x.strip()),
-            odds_format=os.getenv("ODDS_FORMAT", "decimal").strip(),
-            telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
-            telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", "").strip(),
-            database_path=os.getenv("DATABASE_PATH", "data/bbk_scanner.db").strip(),
-            movement_threshold_pct=float(os.getenv("MOVEMENT_THRESHOLD_PCT", "8")),
-            market_deviation_threshold_pct=float(os.getenv("MARKET_DEVIATION_THRESHOLD_PCT", "6")),
-            lookback_minutes=int(os.getenv("LOOKBACK_MINUTES", "30")),
-            min_bookmakers=int(os.getenv("MIN_BOOKMAKERS", "2")),
-            velocity_threshold_pct_per_min=float(os.getenv("VELOCITY_THRESHOLD_PCT_PER_MIN", "0.5")),
-            sharp_bookmakers=tuple(
-                x.strip() for x in os.getenv("SHARP_BOOKMAKERS", "pinnacle").split(",") if x.strip()
-            ),
-            sharp_bonus_multiplier=float(os.getenv("SHARP_BONUS_MULTIPLIER", "1.15")),
-            cooldown_minutes=int(os.getenv("COOLDOWN_MINUTES", "60")),
-            poll_interval_minutes=int(os.getenv("POLL_INTERVAL_MINUTES", "5")),
-            min_score_to_notify=float(os.getenv("MIN_SCORE_TO_NOTIFY", "0")),
-            hours_ahead_limit=float(os.getenv("HOURS_AHEAD_LIMIT", "24")),
-        )
+
+def _env_float(key, default):
+    val = _env(key)
+    return float(val) if val not in (None, "") else default
+
+
+def _env_list(key, default=None):
+    val = _env(key)
+    if not val:
+        return default or []
+    return [item.strip() for item in val.split(",") if item.strip()]
+
+
+# --- Telegram ---
+BOT_TOKEN = _env("BOT_TOKEN")
+CHAT_ID = _env("CHAT_ID")
+
+# --- Scanner thresholds ---
+MOVEMENT_THRESHOLD = _env_float("MOVEMENT", 12)        # % change in odds vs first-seen
+DEVIATION_THRESHOLD = _env_float("DEVIATION", 10)      # % deviation vs other bookmakers
+MIN_SCORE_TO_NOTIFY = _env_float("MIN_SCORE_TO_NOTIFY", 60)
+COOLDOWN_SECONDS = _env_int("COOLDOWN", 90)
+
+# --- The Odds API (REST, fallback/parallel path) ---
+ODDS_API_KEY = _env("ODDS_API_KEY")
+ODDS_REGION = _env("ODDS_REGION", "eu")
+SPORT_KEYS = _env_list("SPORT_KEY", ["soccer_epl"])
+POLL_INTERVAL_MINUTES = _env_int("POLL_INTERVAL_MINUTES", 240)
+
+# --- ODDSCORP (WebSocket, prematch, Bet365 + Parimatch trial) ---
+ODDSCORP_TOKEN = _env("ODDSCORP_TOKEN")
+ODDSCORP_WS_URL = _env("ODDSCORP_WS_URL", "ws://api.oddscorp.com:8001")
+ODDSCORP_BOOKMAKERS = _env_list("ODDSCORP_BOOKMAKERS", ["bet365", "parimatch_com"])
+ODDSCORP_MODE = _env("ODDSCORP_MODE", "prematch")
