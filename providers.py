@@ -311,6 +311,28 @@ class OddscorpProvider(OddsProvider):
                 self._bk_by_event.pop(bk_event_id, None)
                 self._grouped_id.pop(bk_event_id, None)
 
+    @staticmethod
+    def _parse_commence_time(event: dict) -> str:
+        """Достает время начала матча из event['meta'] (JSON-строка внутри JSON).
+
+        ODDSCORP присылает meta вида '{"start_at": 1786197600}' — unix-таймстамп.
+        Возвращает ISO 8601 UTC строку, совместимую с остальным пайплайном
+        (тот же формат, что отдает TheOddsApiProvider), либо "" если распарсить
+        не удалось (например, для уже начавшихся LIVE-событий meta может не
+        содержать start_at).
+        """
+        raw_meta = event.get("meta")
+        if not raw_meta:
+            return ""
+        try:
+            meta = json.loads(raw_meta) if isinstance(raw_meta, str) else raw_meta
+            start_at = meta.get("start_at")
+            if not start_at:
+                return ""
+            return datetime.fromtimestamp(int(start_at), tz=timezone.utc).isoformat()
+        except (ValueError, TypeError, AttributeError):
+            return ""
+
     def fetch(self) -> list[OddsQuote]:
         captured_at = datetime.now(timezone.utc).isoformat()
         quotes: list[OddsQuote] = []
@@ -329,6 +351,7 @@ class OddscorpProvider(OddsProvider):
             sport = str(event.get("sport", ""))
             bk_name = str(event.get("bk_name", self._bk_by_event.get(bk_event_id, "")))
             event_id_out = grouped_snapshot.get(bk_event_id) or bk_event_id
+            commence_time = self._parse_commence_time(event)
 
             for market_name, price in markets.items():
                 win_match = _WIN_RE.match(market_name)
@@ -349,7 +372,7 @@ class OddscorpProvider(OddsProvider):
                     OddsQuote(
                         event_id=str(event_id_out),
                         sport_key=sport,
-                        commence_time="",
+                        commence_time=commence_time,
                         home_team=home,
                         away_team=away,
                         bookmaker_key=bk_name,
