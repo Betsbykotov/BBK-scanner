@@ -10,14 +10,10 @@ from config import Settings
 from database import OddsDatabase
 from models import Alert
 from notifier import TelegramNotifier, format_alert
-from providers import MockProvider, ProviderError, TheOddsApiProvider, list_sports
+from providers import MockProvider, OddscorpProvider, ProviderError, TheOddsApiProvider, list_sports
 
 
 def _filter_by_horizon(quotes: list, hours_ahead_limit: float) -> list:
-    """Оставляет только матчи, которые уже идут (LIVE), или начнутся в ближайшие
-    hours_ahead_limit часов. Матчи через неделю/месяц просто выбрасываются
-    до анализа — незачем тратить на них расчёты и кредиты API.
-    """
     now = datetime.now(timezone.utc)
     horizon = timedelta(hours=hours_ahead_limit)
     kept = []
@@ -25,7 +21,7 @@ def _filter_by_horizon(quotes: list, hours_ahead_limit: float) -> list:
         try:
             commence = datetime.fromisoformat(quote.commence_time.replace("Z", "+00:00"))
         except ValueError:
-            kept.append(quote)  # не смогли распарсить дату — на всякий случай не выбрасываем
+            kept.append(quote)
             continue
         if quote.is_live or commence - now <= horizon:
             kept.append(quote)
@@ -36,7 +32,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="BBK Scanner MVP")
     parser.add_argument(
         "--provider",
-        choices=("mock", "odds-api"),
+        choices=("mock", "odds-api", "oddscorp"),
         default="mock",
         help="Источник коэффициентов",
     )
@@ -65,7 +61,6 @@ def _log(message: str) -> None:
 
 
 def _dedup_alerts(db: OddsDatabase, alerts: list[Alert], cooldown_minutes: int) -> list[Alert]:
-    """Отсекает алерты, которые уже отправлялись по этой линии внутри cooldown-окна."""
     now_iso = datetime.now(timezone.utc).isoformat()
     fresh: list[Alert] = []
     for alert in alerts:
@@ -95,8 +90,6 @@ def run_cycle(
     all_alerts = analyzer.analyze(quotes)
     db.insert_quotes(quotes)
 
-    # Сначала режем по BBK Score (режим "только топ" и т.п.), потом по дедупу —
-    # так дедуп не тратит запись в базу на алерты, которые всё равно не пошлём.
     scored_alerts = [a for a in all_alerts if a.bbk_score >= min_score_to_notify]
     alerts = _dedup_alerts(db, scored_alerts, cooldown_minutes)
     skipped_by_score = len(all_alerts) - len(scored_alerts)
@@ -132,17 +125,22 @@ def main() -> int:
                     print(f"{sport.get('key')}: {sport.get('title')}")
             return 0
 
-        provider = (
-            MockProvider()
-            if args.provider == "mock"
-            else TheOddsApiProvider(
+        if args.provider == "mock":
+            provider = MockProvider()
+        elif args.provider == "odds-api":
+            provider = TheOddsApiProvider(
                 api_key=settings.odds_api_key,
                 sport_keys=settings.sport_keys,
                 regions=settings.odds_region,
                 markets=settings.markets,
                 odds_format=settings.odds_format,
             )
-        )
+        else:
+            provider = OddscorpProvider(
+                auth_key=settings.oddscorp_auth_key,
+                bookmakers=settings.oddscorp_bookmakers,
+                ws_url=settings.oddscorp_ws_url,
+            )
 
         db = OddsDatabase(settings.database_path)
         analyzer = OddsAnalyzer(
@@ -178,9 +176,6 @@ def main() -> int:
                     settings.hours_ahead_limit,
                 )
             except (ProviderError, RuntimeError, ValueError) as exc:
-                # Одна неудачная итерация (сбой API, таймаут Telegram и т.п.)
-                # не должна убивать процесс на Railway — просто логируем и ждём
-                # следующий цикл.
                 _log(f"Ошибка в цикле сканирования: {exc}")
             except KeyboardInterrupt:
                 _log("Остановлено пользователем.")
