@@ -55,6 +55,27 @@ def _filter_by_league(quotes: list, whitelist: tuple[str, ...], blacklist: tuple
     return kept
 
 
+def _filter_by_sport(quotes: list, whitelist: tuple[str, ...]) -> list:
+    """Фильтр по виду спорта (регистронезависимый поиск подстроки в quote.sport_key).
+
+    Отдельно от _filter_by_league, потому что "кибер"/"виртуалка" не всегда
+    палится по названию лиги — у OddsCorp это часто отдельное значение поля
+    sport ("virtual_football", "esports" и т.п.), которое приходит в sport_key.
+
+    Если whitelist пуст — фильтр не применяется (пропускаем всё, как раньше).
+    Если у котировки sport_key пустой — она НЕ проходит непустой whitelist
+    (нет данных = не можем подтвердить, что спорт разрешён).
+    """
+    if not whitelist:
+        return quotes
+    kept = []
+    for quote in quotes:
+        sport_lower = (quote.sport_key or "").lower()
+        if sport_lower and any(good in sport_lower for good in whitelist):
+            kept.append(quote)
+    return kept
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="BBK Scanner MVP")
     parser.add_argument(
@@ -113,10 +134,12 @@ def run_cycle(
     hours_ahead_limit: float = 24.0,
     league_whitelist: tuple[str, ...] = (),
     league_blacklist: tuple[str, ...] = (),
+    sport_whitelist: tuple[str, ...] = (),
 ) -> None:
     all_quotes = provider.fetch()
     quotes = _filter_by_horizon(all_quotes, hours_ahead_limit)
     quotes = _filter_by_league(quotes, league_whitelist, league_blacklist)
+    quotes = _filter_by_sport(quotes, sport_whitelist)
     all_alerts = analyzer.analyze(quotes)
     db.insert_quotes(quotes)
 
@@ -126,7 +149,9 @@ def run_cycle(
     skipped_by_dedup = len(scored_alerts) - len(alerts)
 
     # ВРЕМЕННЫЙ ДЕБАГ: топ-5 алертов по score КАЖДЫЙ цикл, независимо от порога,
-    # чтобы можно было сверить с реальными матчами в БК. Удалить после проверки.
+    # чтобы можно было сверить с реальными матчами в БК. Теперь включает sport_key —
+    # используй эти значения, чтобы откалибровать SPORT_WHITELIST осознанно.
+    # Удалить после проверки.
     top_debug = sorted(all_alerts, key=lambda a: a.bbk_score, reverse=True)[:5]
     for a in top_debug:
         q = a.quote
@@ -134,11 +159,12 @@ def run_cycle(
         _log(
             f"[DEBUG top] score={a.bbk_score:.0f} [{status}] {q.home_team} — {q.away_team} "
             f"| {q.bookmaker_title} | {q.market_key} {q.outcome_name} | "
-            f"цена={q.price:.3f} | движение={a.movement_pct} | лига={q.league_name}"
+            f"цена={q.price:.3f} | движение={a.movement_pct} | "
+            f"спорт={q.sport_key!r} | лига={q.league_name!r}"
         )
 
     _log(
-        f"Получено: {len(all_quotes)} | В горизонте {hours_ahead_limit:.0f}ч: {len(quotes)} "
+        f"Получено: {len(all_quotes)} | В горизонте {hours_ahead_limit:.0f}ч и после фильтров: {len(quotes)} "
         f"| Алертов найдено: {len(all_alerts)} "
         f"| Ниже порога score: {skipped_by_score} | Повтор (дедуп): {skipped_by_dedup} "
         f"| Отправлено: {len(alerts)}"
@@ -206,6 +232,7 @@ def main() -> int:
                 settings.cooldown_minutes, settings.min_score_to_notify,
                 settings.hours_ahead_limit,
                 settings.league_whitelist, settings.league_blacklist,
+                settings.sport_whitelist,
             )
             return 0
 
@@ -218,6 +245,7 @@ def main() -> int:
                     settings.cooldown_minutes, settings.min_score_to_notify,
                     settings.hours_ahead_limit,
                     settings.league_whitelist, settings.league_blacklist,
+                    settings.sport_whitelist,
                 )
             except (ProviderError, RuntimeError, ValueError) as exc:
                 _log(f"Ошибка в цикле сканирования: {exc}")
