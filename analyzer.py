@@ -50,6 +50,11 @@ class OddsAnalyzer:
             grouped[quote.selection_key].append(quote)
 
         now_iso = datetime.now(timezone.utc).isoformat()
+        # ИСПРАВЛЕНО: cutoff — это НИЖНЯЯ граница окна поиска (начало lookback-
+        # окна в прошлом), не верхняя. Раньше передавался в previous_quote как
+        # единственный параметр и использовался как верхняя граница — из-за
+        # этого запрос искал снимки СТАРШЕ lookback_minutes, которых физически
+        # не было, пока сканер не проработал непрерывно дольше этого окна.
         cutoff = (
             datetime.now(timezone.utc) - timedelta(minutes=self.lookback_minutes)
         ).isoformat()
@@ -70,7 +75,7 @@ class OddsAnalyzer:
             velocities: dict[str, float | None] = {}
             previous_map: dict[str, float | None] = {}
             for quote in group:
-                prev = self.db.previous_quote(quote, cutoff)
+                prev = self.db.previous_quote(quote, now_iso, cutoff)
                 if prev is not None:
                     prev_price, prev_captured_at = prev
                     movements[quote.bookmaker_key] = pct_change(prev_price, quote.price)
