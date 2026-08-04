@@ -51,6 +51,7 @@ class BBKScoreInputs:
     consensus_pct: float  # 0..100, доля БК в группе, двигавшихся в ту же сторону
     is_sharp_source: bool
     sharp_bonus_multiplier: float
+    price: float | None = None  # NEW: текущий коэффициент — нужен для штрафа за тонкий рынок
 
 
 def _scale(value: float | None, threshold: float, saturate_at_x_threshold: float = 2.5) -> float:
@@ -69,10 +70,35 @@ def _scale(value: float | None, threshold: float, saturate_at_x_threshold: float
     return max(0.0, min(100.0, score))
 
 
+def _thin_market_penalty(price: float | None) -> float:
+    """Множитель 0..1, снижающий вклад movement/velocity на высоких коэффициентах.
+
+    Почему: на цене 1.85 движение в X% стоит за собой реальные деньги — рынок
+    ликвидный, скачок цены значит что-то. На цене 11.0 то же движение в X%
+    может быть просто тем, что контора поправила линию, на которую почти
+    никто не ставит (тонкий рынок, мало объёма) — шум, а не сигнал.
+
+    Порог начала штрафа и полная сила штрафа откалиброваны так:
+    - price <= 3.0  -> без штрафа (1.0), это ликвидные линии
+    - price == 6.0  -> штраф уже заметный (~0.55)
+    - price >= 10.0 -> сильный штраф (~0.25), такое движение почти
+      никогда не должно в одиночку давать топ-score
+    Формула: 1 / (1 + max(0, price - 3) / 4), плавно и без резких обрывов.
+    """
+    if price is None or price <= 3.0:
+        return 1.0
+    return 1.0 / (1.0 + (price - 3.0) / 4.0)
+
+
 def compute_bbk_score(inputs: BBKScoreInputs, weights: BBKScoreWeights = BBKScoreWeights()) -> tuple[float, str]:
-    movement_score = _scale(inputs.movement_pct, inputs.movement_threshold_pct)
+    penalty = _thin_market_penalty(inputs.price)
+
+    movement_score = _scale(inputs.movement_pct, inputs.movement_threshold_pct) * penalty
+    velocity_score = _scale(inputs.velocity_pct_per_min, inputs.velocity_threshold_pct_per_min) * penalty
+    # deviation и consensus НЕ штрафуем: это сравнение между конторами в моменте
+    # (а не движение во времени на тонком объёме), штраф там не обоснован тем же
+    # механизмом — оставляем как индикатор без изменений.
     deviation_score = _scale(inputs.deviation_pct, inputs.deviation_threshold_pct)
-    velocity_score = _scale(inputs.velocity_pct_per_min, inputs.velocity_threshold_pct_per_min)
     consensus_score = max(0.0, min(100.0, inputs.consensus_pct))
 
     raw = (
