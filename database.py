@@ -66,15 +66,25 @@ class OddsDatabase:
                 rows,
             )
 
-    def previous_price(self, quote: OddsQuote, before_iso: str) -> float | None:
-        result = self.previous_quote(quote, before_iso)
+    def previous_price(self, quote: OddsQuote, now_iso: str, lookback_start_iso: str) -> float | None:
+        result = self.previous_quote(quote, now_iso, lookback_start_iso)
         return result[0] if result else None
 
-    def previous_quote(self, quote: OddsQuote, before_iso: str) -> tuple[float, str] | None:
-        """Возвращает (цена, captured_at) последнего снимка ДО before_iso.
+    def previous_quote(
+        self, quote: OddsQuote, now_iso: str, lookback_start_iso: str
+    ) -> tuple[float, str] | None:
+        """Возвращает (цена, captured_at) последнего снимка ДО now_iso,
+        но не старше lookback_start_iso (окно поиска в прошлое).
 
-        Нужен и цена, и время снимка: BBK Score считает скорость движения
-        (% в минуту), а не только сам факт движения.
+        ВАЖНО: раньше сюда передавался только один параметр — начало окна
+        (lookback_start), который в SQL использовался как ВЕРХНЯЯ граница
+        (captured_at <= before_iso). Это был баг: запрос искал снимок СТАРШЕ
+        начала окна поиска, а не "последний снимок В пределах окна". Пока
+        сканер не проработал непрерывно дольше lookback_minutes, такая строка
+        физически не могла существовать — отсюда movement/velocity всегда None.
+
+        Теперь два явных параметра: верхняя граница (текущий момент) и нижняя
+        (начало окна) — берём самый свежий снимок строго внутри этого окна.
         """
         point_condition = "point IS NULL" if quote.point is None else "point = ?"
         params: list[object] = [
@@ -82,7 +92,8 @@ class OddsDatabase:
         ]
         if quote.point is not None:
             params.append(quote.point)
-        params.append(before_iso)
+        params.append(lookback_start_iso)
+        params.append(now_iso)
         with self.connect() as conn:
             row = conn.execute(
                 f"""
@@ -93,7 +104,8 @@ class OddsDatabase:
                   AND market_key = ?
                   AND outcome_name = ?
                   AND {point_condition}
-                  AND captured_at <= ?
+                  AND captured_at >= ?
+                  AND captured_at < ?
                 ORDER BY captured_at DESC
                 LIMIT 1
                 """,
