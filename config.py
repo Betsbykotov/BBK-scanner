@@ -41,8 +41,12 @@ class Settings:
     oddscorp_auth_key: str
     oddscorp_ws_url: str
     oddscorp_bookmakers: tuple[str, ...]
-    league_blacklist: tuple[str, ...]  # NEW: подстроки в названии лиги — если совпало, событие выкидывается
-    league_whitelist: tuple[str, ...]  # NEW: если не пусто — оставляем ТОЛЬКО лиги, где есть совпадение
+    league_blacklist: tuple[str, ...]  # подстроки в названии лиги — если совпало, событие выкидывается
+    league_whitelist: tuple[str, ...]  # если не пусто — оставляем ТОЛЬКО лиги, где есть совпадение
+    sport_whitelist: tuple[str, ...]  # NEW: подстроки в sport_key (напр. football, tennis, basketball).
+    # Если не пусто — оставляем ТОЛЬКО котировки, где sport_key содержит одну из подстрок.
+    # Оставь пустым (SPORT_WHITELIST="") на первый прогон, чтобы увидеть в debug-логе
+    # реальные значения sport_key от OddsCorp и откалибровать список осознанно.
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -81,5 +85,8 @@ class Settings:
             ),
             league_whitelist=tuple(
                 x.strip().lower() for x in os.getenv("LEAGUE_WHITELIST", "").split(",") if x.strip()
+            ),
+            sport_whitelist=tuple(
+                x.strip().lower() for x in os.getenv("SPORT_WHITELIST", "").split(",") if x.strip()
             ),
         )
