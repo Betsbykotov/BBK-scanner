@@ -137,6 +137,7 @@ class OddsAnalyzer:
                         consensus_pct=consensus_pct,
                         is_sharp_source=is_sharp,
                         sharp_bonus_multiplier=self.sharp_bonus_multiplier,
+                        price=quote.price,
                     ),
                     self.score_weights,
                 )
