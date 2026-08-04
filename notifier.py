@@ -38,8 +38,17 @@ def format_alert(alert: Alert) -> str:
     )
     sharp_mark = " 🎯 <i>sharp-источник</i>" if alert.is_sharp_source else ""
     match_status = "🔴 <b>LIVE</b> ⚽" if q.is_live else "⏳ <b>Прематч</b>"
-    kickoff = _format_kickoff(q.commence_time)
     league_line = f"🌍 {_esc(q.league_name)}\n" if q.league_name else ""
+
+    # ИСПРАВЛЕНО: для LIVE-матчей OddsCorp часто не присылает start_at в meta
+    # (матч уже начался, "время начала в будущем" не имеет смысла) — раньше
+    # это превращалось в бессмысленную строку "🕐 Начало: время неизвестно".
+    # Теперь для LIVE строка времени не показывается вообще — статус "🔴 LIVE"
+    # уже говорит, что матч идёт сейчас. Для prematch — показываем время как раньше.
+    if q.is_live:
+        kickoff_line = ""
+    else:
+        kickoff_line = f"🕐 Начало: {_format_kickoff(q.commence_time)}\n"
 
     # Заголовок: тир + score одной строкой, крупно и понятно с первого взгляда.
     header = f"{alert.bbk_tier} <b>BBK SCORE: {alert.bbk_score:.0f}/100</b>"
@@ -51,7 +60,7 @@ def format_alert(alert: Alert) -> str:
     return (
         f"{header}\n"
         f"{match_status}\n"
-        f"🕐 Начало: {kickoff}\n"
+        f"{kickoff_line}"
         f"{league_line}\n"
         f"<b>⚽ {_esc(q.home_team)} — {_esc(q.away_team)}</b>\n"
         f"🏦 {_esc(q.bookmaker_title)}{sharp_mark}\n"
