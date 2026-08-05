@@ -148,10 +148,6 @@ def run_cycle(
     skipped_by_score = len(all_alerts) - len(scored_alerts)
     skipped_by_dedup = len(scored_alerts) - len(alerts)
 
-    # ВРЕМЕННЫЙ ДЕБАГ: топ-5 алертов по score КАЖДЫЙ цикл, независимо от порога,
-    # чтобы можно было сверить с реальными матчами в БК. Теперь включает sport_key —
-    # используй эти значения, чтобы откалибровать SPORT_WHITELIST осознанно.
-    # Удалить после проверки.
     top_debug = sorted(all_alerts, key=lambda a: a.bbk_score, reverse=True)[:5]
     for a in top_debug:
         q = a.quote
@@ -160,7 +156,7 @@ def run_cycle(
             f"[DEBUG top] score={a.bbk_score:.0f} [{status}] {q.home_team} — {q.away_team} "
             f"| {q.bookmaker_title} | {q.market_key} {q.outcome_name} | "
             f"цена={q.price:.3f} | движение={a.movement_pct} | "
-            f"спорт={q.sport_key!r} | лига={q.league_name!r}"
+            f"спорт={q.sport_key!r} | лига={q.league_name!r} | тип={a.signal_type}"
         )
 
     _log(
@@ -220,6 +216,10 @@ def main() -> int:
             velocity_threshold_pct_per_min=settings.velocity_threshold_pct_per_min,
             sharp_bookmakers=settings.sharp_bookmakers,
             sharp_bonus_multiplier=settings.sharp_bonus_multiplier,
+            momentum_window_minutes=settings.momentum_window_minutes,
+            momentum_min_bookmakers=settings.momentum_min_bookmakers,
+            momentum_total_shift_pct=settings.momentum_total_shift_pct,
+            momentum_max_velocity_pct_per_min=settings.momentum_max_velocity_pct_per_min,
         )
         notifier = TelegramNotifier(
             settings.telegram_bot_token,
