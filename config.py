@@ -47,6 +47,10 @@ class Settings:
     # Если не пусто — оставляем ТОЛЬКО котировки, где sport_key содержит одну из подстрок.
     # Оставь пустым (SPORT_WHITELIST="") на первый прогон, чтобы увидеть в debug-логе
     # реальные значения sport_key от OddsCorp и откалибровать список осознанно.
+    momentum_window_minutes: int
+    momentum_min_bookmakers: int
+    momentum_total_shift_pct: float
+    momentum_max_velocity_pct_per_min: float
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -89,4 +93,8 @@ class Settings:
             sport_whitelist=tuple(
                 x.strip().lower() for x in os.getenv("SPORT_WHITELIST", "").split(",") if x.strip()
             ),
+            momentum_window_minutes=int(os.getenv("MOMENTUM_WINDOW_MINUTES", "4")),
+            momentum_min_bookmakers=int(os.getenv("MOMENTUM_MIN_BOOKMAKERS", "3")),
+            momentum_total_shift_pct=float(os.getenv("MOMENTUM_TOTAL_SHIFT_PCT", "4")),
+            momentum_max_velocity_pct_per_min=float(os.getenv("MOMENTUM_MAX_VELOCITY_PCT_PER_MIN", "2.5")),
         )
