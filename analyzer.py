@@ -33,6 +33,10 @@ class OddsAnalyzer:
         sharp_bookmakers: tuple[str, ...] = ("pinnacle",),
         sharp_bonus_multiplier: float = 1.15,
         score_weights: BBKScoreWeights = BBKScoreWeights(),
+        momentum_window_minutes: int = 4,
+        momentum_min_bookmakers: int = 3,
+        momentum_total_shift_pct: float = 4.0,
+        momentum_max_velocity_pct_per_min: float = 2.5,
     ):
         self.db = db
         self.movement_threshold_pct = movement_threshold_pct
@@ -43,6 +47,10 @@ class OddsAnalyzer:
         self.sharp_bookmakers = set(sharp_bookmakers)
         self.sharp_bonus_multiplier = sharp_bonus_multiplier
         self.score_weights = score_weights
+        self.momentum_window_minutes = momentum_window_minutes
+        self.momentum_min_bookmakers = momentum_min_bookmakers
+        self.momentum_total_shift_pct = momentum_total_shift_pct
+        self.momentum_max_velocity_pct_per_min = momentum_max_velocity_pct_per_min
 
     def analyze(self, quotes: list[OddsQuote]) -> list[Alert]:
         grouped: dict[str, list[OddsQuote]] = defaultdict(list)
@@ -50,11 +58,6 @@ class OddsAnalyzer:
             grouped[quote.selection_key].append(quote)
 
         now_iso = datetime.now(timezone.utc).isoformat()
-        # ИСПРАВЛЕНО: cutoff — это НИЖНЯЯ граница окна поиска (начало lookback-
-        # окна в прошлом), не верхняя. Раньше передавался в previous_quote как
-        # единственный параметр и использовался как верхняя граница — из-за
-        # этого запрос искал снимки СТАРШЕ lookback_minutes, которых физически
-        # не было, пока сканер не проработал непрерывно дольше этого окна.
         cutoff = (
             datetime.now(timezone.utc) - timedelta(minutes=self.lookback_minutes)
         ).isoformat()
@@ -67,10 +70,6 @@ class OddsAnalyzer:
                 else None
             )
 
-            # Первый проход по группе: считаем движение и скорость для КАЖДОЙ
-            # котировки. Это нужно заранее, чтобы на втором проходе посчитать
-            # consensus — сколько других БК в этой же группе двигались в ту
-            # же сторону (лайт-версия steam move detection).
             movements: dict[str, float | None] = {}
             velocities: dict[str, float | None] = {}
             previous_map: dict[str, float | None] = {}
@@ -110,8 +109,6 @@ class OddsAnalyzer:
                 if not reasons:
                     continue
 
-                # Consensus: доля ДРУГИХ букмекеров в группе, которые двигались
-                # в ту же сторону, что и текущая котировка.
                 same_direction = 0
                 other_count = 0
                 if movement is not None:
@@ -158,9 +155,6 @@ class OddsAnalyzer:
                     )
                 )
 
-        # Один алерт на selection_key (матч+рынок+исход) за цикл — берём
-        # лучший по BBK score, чтобы не спамить одним и тем же движением
-        # рынка от каждого букмекера по отдельности.
         best_by_selection: dict[str, Alert] = {}
         for alert in candidates:
             key = alert.quote.selection_key
@@ -169,5 +163,110 @@ class OddsAnalyzer:
                 best_by_selection[key] = alert
 
         alerts = list(best_by_selection.values())
+
+        momentum_alerts = self._detect_momentum(quotes, now_iso)
+        alerts.extend(momentum_alerts)
+
         alerts.sort(key=lambda a: a.bbk_score, reverse=True)
         return alerts
+
+    def _detect_momentum(self, quotes: list[OddsQuote], now_iso: str) -> list[Alert]:
+        """Ловит плавное синхронное давление на тотал (Over дешевеет / Under
+        дорожает у нескольких букмекеров), БЕЗ резкого скачка — то есть до
+        гола, а не реакцию рынка на уже забитый гол.
+        """
+        grouped: dict[str, list[OddsQuote]] = defaultdict(list)
+        for quote in quotes:
+            if quote.market_key != "totals" or not quote.is_live:
+                continue
+            grouped[quote.selection_key].append(quote)
+
+        momentum_cutoff = (
+            datetime.now(timezone.utc) - timedelta(minutes=self.momentum_window_minutes)
+        ).isoformat()
+
+        momentum_alerts: list[Alert] = []
+        for group in grouped.values():
+            if len({q.bookmaker_key for q in group}) < self.momentum_min_bookmakers:
+                continue
+
+            movements: dict[str, float] = {}
+            velocities: dict[str, float] = {}
+            for quote in group:
+                prev = self.db.previous_quote(quote, now_iso, momentum_cutoff)
+                if prev is None:
+                    continue
+                prev_price, prev_captured_at = prev
+                movement = pct_change(prev_price, quote.price)
+                elapsed = _elapsed_minutes(prev_captured_at, now_iso)
+                if elapsed <= 0:
+                    continue
+                movements[quote.bookmaker_key] = movement
+                velocities[quote.bookmaker_key] = abs(movement) / elapsed
+
+            if len(movements) < self.momentum_min_bookmakers:
+                continue
+
+            is_over = group[0].outcome_name.lower() == "over"
+            supporting = {
+                bk: m for bk, m in movements.items()
+                if (m < 0 if is_over else m > 0)
+            }
+            if len(supporting) < self.momentum_min_bookmakers:
+                continue
+
+            avg_movement = sum(supporting.values()) / len(supporting)
+            avg_velocity = sum(velocities[bk] for bk in supporting) / len(supporting)
+
+            if abs(avg_movement) < self.momentum_total_shift_pct:
+                continue
+            if avg_velocity > self.momentum_max_velocity_pct_per_min:
+                continue  # слишком резко — похоже на реакцию на уже забитый гол
+
+            best_bk = max(supporting, key=lambda bk: abs(supporting[bk]))
+            representative = next(q for q in group if q.bookmaker_key == best_bk)
+            is_sharp = any(bk in self.sharp_bookmakers for bk in supporting)
+            consensus_pct = len(supporting) / len(group) * 100.0
+
+            score, tier = compute_bbk_score(
+                BBKScoreInputs(
+                    movement_pct=avg_movement,
+                    movement_threshold_pct=self.momentum_total_shift_pct,
+                    deviation_pct=None,
+                    deviation_threshold_pct=self.market_deviation_threshold_pct,
+                    velocity_pct_per_min=avg_velocity,
+                    velocity_threshold_pct_per_min=self.momentum_max_velocity_pct_per_min,
+                    consensus_pct=consensus_pct,
+                    is_sharp_source=is_sharp,
+                    sharp_bonus_multiplier=self.sharp_bonus_multiplier,
+                    price=representative.price,
+                ),
+                self.score_weights,
+            )
+
+            direction_label = "Over дешевеет" if is_over else "Under дорожает"
+            reason = (
+                f"[MOMENTUM] {len(supporting)}/{len(group)} букмекеров: {direction_label} "
+                f"в среднем {avg_movement:+.2f}% за {self.momentum_window_minutes} мин "
+                f"— давление на гол, без резкого скачка"
+            )
+
+            momentum_alerts.append(
+                Alert(
+                    quote=representative,
+                    previous_price=None,
+                    movement_pct=avg_movement,
+                    market_average=None,
+                    market_deviation_pct=None,
+                    reason=reason,
+                    bbk_score=score,
+                    bbk_tier=tier,
+                    velocity_pct_per_min=avg_velocity,
+                    consensus_pct=round(consensus_pct, 1),
+                    is_sharp_source=is_sharp,
+                    signal_type="MOMENTUM",
+                )
+            )
+
+        momentum_alerts.sort(key=lambda a: a.bbk_score, reverse=True)
+        return momentum_alerts
