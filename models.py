@@ -53,6 +53,7 @@ class Alert:
     velocity_pct_per_min: float | None = None
     consensus_pct: float = 0.0
     is_sharp_source: bool = False
+    signal_type: str = "STANDARD"  # NEW: "STANDARD" | "MOMENTUM"
 
     @property
     def dedup_key(self) -> str:
@@ -61,4 +62,4 @@ class Alert:
         Без bookmaker_key в ключе алерты от разных БК по одному и тому же
         событию гасили бы друг друга — а это разные сигналы.
         """
-        return f"{self.quote.selection_key}:{self.quote.bookmaker_key}"
+        return f"{self.quote.selection_key}:{self.quote.bookmaker_key}:{self.signal_type}"
