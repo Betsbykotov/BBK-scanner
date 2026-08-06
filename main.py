@@ -11,6 +11,8 @@ from database import OddsDatabase
 from models import Alert
 from notifier import TelegramNotifier, format_alert
 from providers import MockProvider, OddscorpProvider, ProviderError, TheOddsApiProvider, list_sports
+from sportmonks_provider import SportmonksProvider
+from pressure_detector import detect_pressure_alerts
 
 
 def _filter_by_horizon(quotes: list, hours_ahead_limit: float) -> list:
@@ -100,6 +102,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Интервал опроса в режиме --loop (по умолчанию — POLL_INTERVAL_MINUTES из .env)",
     )
+    parser.add_argument(
+        "--no-pressure",
+        action="store_true",
+        help="Отключить сигналы xG/Pressure Index от Sportmonks, даже если ключ задан",
+    )
     return parser
 
 
@@ -122,6 +129,46 @@ def _mark_sent(db: OddsDatabase, alerts: list[Alert]) -> None:
     now_iso = datetime.now(timezone.utc).isoformat()
     for alert in alerts:
         db.mark_sent(alert.dedup_key, now_iso)
+
+
+def run_pressure_cycle(
+    sportmonks_provider: SportmonksProvider | None,
+    db: OddsDatabase,
+    notifier: TelegramNotifier,
+    cooldown_minutes: int,
+) -> None:
+    """
+    Отдельный, полностью изолированный цикл: xG / Pressure Index от Sportmonks.
+    Ничего общего с analyzer.py и MOMENTUM/SHARP — если тут что-то упадёт,
+    это никак не затронет основной цикл run_cycle().
+    """
+    if sportmonks_provider is None:
+        return
+
+    try:
+        matches = sportmonks_provider.get_live_pressure_data()
+    except Exception as exc:
+        _log(f"[PRESSURE] Ошибка получения данных Sportmonks: {exc}")
+        return
+
+    if not matches:
+        return
+
+    pressure_alerts = detect_pressure_alerts(matches)
+    if not pressure_alerts:
+        return
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    sent = 0
+    for alert in pressure_alerts:
+        if db.was_recently_sent(alert["dedup_key"], cooldown_minutes, now_iso):
+            continue
+        print("\n" + alert["message"] + "\n")
+        notifier.send(alert["message"])
+        db.mark_sent(alert["dedup_key"], now_iso)
+        sent += 1
+
+    _log(f"[PRESSURE] Матчей проверено: {len(matches)} | Алертов: {len(pressure_alerts)} | Отправлено: {sent}")
 
 
 def run_cycle(
@@ -226,6 +273,14 @@ def main() -> int:
             settings.telegram_chat_id,
         )
 
+        sportmonks_provider = None
+        sportmonks_key = getattr(settings, "sportmonks_api_key", "") or ""
+        if sportmonks_key and not args.no_pressure:
+            sportmonks_provider = SportmonksProvider(api_token=sportmonks_key)
+            _log("[PRESSURE] Sportmonks провайдер активирован (xG/Pressure Index).")
+        elif not sportmonks_key:
+            _log("[PRESSURE] SPORTMONKS_API_KEY не задан — сигналы xG/Pressure отключены.")
+
         if not args.loop:
             run_cycle(
                 provider, db, analyzer, notifier,
@@ -234,6 +289,7 @@ def main() -> int:
                 settings.league_whitelist, settings.league_blacklist,
                 settings.sport_whitelist,
             )
+            run_pressure_cycle(sportmonks_provider, db, notifier, settings.cooldown_minutes)
             return 0
 
         interval_minutes = args.interval_minutes or settings.poll_interval_minutes
@@ -247,6 +303,7 @@ def main() -> int:
                     settings.league_whitelist, settings.league_blacklist,
                     settings.sport_whitelist,
                 )
+                run_pressure_cycle(sportmonks_provider, db, notifier, settings.cooldown_minutes)
             except (ProviderError, RuntimeError, ValueError) as exc:
                 _log(f"Ошибка в цикле сканирования: {exc}")
             except KeyboardInterrupt:
