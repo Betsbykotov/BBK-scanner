@@ -59,7 +59,7 @@ def detect_pressure_alerts(matches: list[dict]) -> list[dict]:
             continue
 
         message = (
-            f"[PRESSURE] {match['home_team']} — {match['away_team']} "
+            f"📊 xG Статистика | {match['home_team']} — {match['away_team']} "
             f"({minute}')\n"
             f"Доминирует: {dominant_team}\n"
             f"{' | '.join(reason_parts)}"
