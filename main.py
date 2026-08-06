@@ -152,10 +152,16 @@ def run_pressure_cycle(
         return
 
     if not matches:
+        _log("[PRESSURE] Live-матчей от Sportmonks не найдено в этом цикле.")
         return
 
     pressure_alerts = detect_pressure_alerts(matches)
     if not pressure_alerts:
+        minutes_seen = sorted(m.get("minute", 0) for m in matches)
+        _log(
+            f"[PRESSURE] Матчей от Sportmonks: {len(matches)} (минуты: {minutes_seen}) "
+            f"— явного дисбаланса xG/Pressure не найдено."
+        )
         return
 
     now_iso = datetime.now(timezone.utc).isoformat()
