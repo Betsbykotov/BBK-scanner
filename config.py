@@ -51,6 +51,7 @@ class Settings:
     momentum_min_bookmakers: int
     momentum_total_shift_pct: float
     momentum_max_velocity_pct_per_min: float
+    sportmonks_api_key: str  # NEW: ключ для xG / Pressure Index (live-статистика матча)
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -97,4 +98,5 @@ class Settings:
             momentum_min_bookmakers=int(os.getenv("MOMENTUM_MIN_BOOKMAKERS", "3")),
             momentum_total_shift_pct=float(os.getenv("MOMENTUM_TOTAL_SHIFT_PCT", "4")),
             momentum_max_velocity_pct_per_min=float(os.getenv("MOMENTUM_MAX_VELOCITY_PCT_PER_MIN", "2.5")),
+            sportmonks_api_key=os.getenv("SPORTMONKS_API_KEY", "").strip(),
         )
