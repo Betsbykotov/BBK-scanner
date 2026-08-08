@@ -32,19 +32,20 @@ class Settings:
     lookback_minutes: int
     min_bookmakers: int
     velocity_threshold_pct_per_min: float
-    sharp_live_max_velocity_pct_per_min: float  # NEW: если LIVE-сигнал двигается быстрее этого — считаем, что рынок уже отреагировал на гол, гасим алерт
+    sharp_live_max_velocity_pct_per_min: float  # если LIVE-сигнал двигается быстрее этого — считаем, что рынок уже отреагировал на гол, гасим алерт
     sharp_bookmakers: tuple[str, ...]
     sharp_bonus_multiplier: float
     cooldown_minutes: int
     poll_interval_minutes: int
     min_score_to_notify: float
+    max_alerts_per_hour: int  # NEW: жёсткий потолок отправок в скользящий час — только топ по score проходит
     hours_ahead_limit: float
     oddscorp_auth_key: str
     oddscorp_ws_url: str
     oddscorp_bookmakers: tuple[str, ...]
     league_blacklist: tuple[str, ...]  # подстроки в названии лиги — если совпало, событие выкидывается
     league_whitelist: tuple[str, ...]  # если не пусто — оставляем ТОЛЬКО лиги, где есть совпадение
-    sport_whitelist: tuple[str, ...]  # NEW: подстроки в sport_key (напр. football, tennis, basketball).
+    sport_whitelist: tuple[str, ...]  # подстроки в sport_key (напр. football, tennis, basketball).
     # Если не пусто — оставляем ТОЛЬКО котировки, где sport_key содержит одну из подстрок.
     # Оставь пустым (SPORT_WHITELIST="") на первый прогон, чтобы увидеть в debug-логе
     # реальные значения sport_key от OddsCorp и откалибровать список осознанно.
@@ -52,7 +53,7 @@ class Settings:
     momentum_min_bookmakers: int
     momentum_total_shift_pct: float
     momentum_max_velocity_pct_per_min: float
-    sportmonks_api_key: str  # NEW: ключ для xG / Pressure Index (live-статистика матча)
+    sportmonks_api_key: str  # ключ для xG / Pressure Index (live-статистика матча)
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -81,6 +82,7 @@ class Settings:
             cooldown_minutes=int(os.getenv("COOLDOWN_MINUTES", "60")),
             poll_interval_minutes=int(os.getenv("POLL_INTERVAL_MINUTES", "5")),
             min_score_to_notify=float(os.getenv("MIN_SCORE_TO_NOTIFY", "0")),
+            max_alerts_per_hour=int(os.getenv("MAX_ALERTS_PER_HOUR", "20")),
             hours_ahead_limit=float(os.getenv("HOURS_AHEAD_LIMIT", "24")),
             oddscorp_auth_key=os.getenv("ODDSCORP_AUTH_KEY", "").strip(),
             oddscorp_ws_url=os.getenv("ODDSCORP_WS_URL", "ws://api.oddscorp.com:8001").strip(),

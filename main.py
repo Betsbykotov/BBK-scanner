@@ -131,6 +131,11 @@ def _mark_sent(db: OddsDatabase, alerts: list[Alert]) -> None:
         db.mark_sent(alert.dedup_key, now_iso)
 
 
+def _prune_old_timestamps(timestamps: list[datetime], now: datetime, window_minutes: int = 60) -> list[datetime]:
+    cutoff = now - timedelta(minutes=window_minutes)
+    return [t for t in timestamps if t >= cutoff]
+
+
 def run_pressure_cycle(
     sportmonks_provider: SportmonksProvider | None,
     db: OddsDatabase,
@@ -188,7 +193,12 @@ def run_cycle(
     league_whitelist: tuple[str, ...] = (),
     league_blacklist: tuple[str, ...] = (),
     sport_whitelist: tuple[str, ...] = (),
-) -> None:
+    max_alerts_per_hour: int = 20,
+    sent_timestamps: list[datetime] | None = None,
+) -> list[datetime]:
+    if sent_timestamps is None:
+        sent_timestamps = []
+
     all_quotes = provider.fetch()
     quotes = _filter_by_horizon(all_quotes, hours_ahead_limit)
     quotes = _filter_by_league(quotes, league_whitelist, league_blacklist)
@@ -200,6 +210,17 @@ def run_cycle(
     alerts = _dedup_alerts(db, scored_alerts, cooldown_minutes)
     skipped_by_score = len(all_alerts) - len(scored_alerts)
     skipped_by_dedup = len(scored_alerts) - len(alerts)
+
+    # Скользящее окно на час: даже если валид-сигналов пришло много, отправляем
+    # только топ по score, пока не упрёмся в MAX_ALERTS_PER_HOUR. То, что не
+    # поместилось, НЕ помечается как отправленное — получит шанс пройти в
+    # следующем цикле, если освободится место в окне.
+    now_dt = datetime.now(timezone.utc)
+    sent_timestamps = _prune_old_timestamps(sent_timestamps, now_dt)
+    remaining_capacity = max(0, max_alerts_per_hour - len(sent_timestamps))
+    alerts_sorted = sorted(alerts, key=lambda a: a.bbk_score, reverse=True)
+    alerts_to_send = alerts_sorted[:remaining_capacity]
+    skipped_by_hourly_cap = len(alerts_sorted) - len(alerts_to_send)
 
     top_debug = sorted(all_alerts, key=lambda a: a.bbk_score, reverse=True)[:5]
     for a in top_debug:
@@ -216,18 +237,22 @@ def run_cycle(
         f"Получено: {len(all_quotes)} | В горизонте {hours_ahead_limit:.0f}ч и после фильтров: {len(quotes)} "
         f"| Алертов найдено: {len(all_alerts)} "
         f"| Ниже порога score: {skipped_by_score} | Повтор (дедуп): {skipped_by_dedup} "
-        f"| Отправлено: {len(alerts)}"
+        f"| Срезано лимитом {max_alerts_per_hour}/час: {skipped_by_hourly_cap} "
+        f"| Отправлено: {len(alerts_to_send)}"
     )
 
-    for alert in alerts:
+    for alert in alerts_to_send:
         message = format_alert(alert)
         print("\n" + message + "\n")
         notifier.send(message)
+        sent_timestamps.append(now_dt)
 
-    _mark_sent(db, alerts)
+    _mark_sent(db, alerts_to_send)
 
     if not notifier.enabled:
         _log("Telegram отключен: заполните TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID.")
+
+    return sent_timestamps
 
 
 def main() -> int:
@@ -288,13 +313,17 @@ def main() -> int:
         elif not sportmonks_key:
             _log("[PRESSURE] SPORTMONKS_API_KEY не задан — сигналы xG/Pressure отключены.")
 
+        sent_timestamps: list[datetime] = []
+
         if not args.loop:
-            run_cycle(
+            sent_timestamps = run_cycle(
                 provider, db, analyzer, notifier,
                 settings.cooldown_minutes, settings.min_score_to_notify,
                 settings.hours_ahead_limit,
                 settings.league_whitelist, settings.league_blacklist,
                 settings.sport_whitelist,
+                settings.max_alerts_per_hour,
+                sent_timestamps,
             )
             run_pressure_cycle(sportmonks_provider, db, notifier, settings.cooldown_minutes)
             return 0
@@ -303,12 +332,14 @@ def main() -> int:
         _log(f"Запуск в режиме --loop, интервал {interval_minutes} мин. Ctrl+C для остановки.")
         while True:
             try:
-                run_cycle(
+                sent_timestamps = run_cycle(
                     provider, db, analyzer, notifier,
                     settings.cooldown_minutes, settings.min_score_to_notify,
                     settings.hours_ahead_limit,
                     settings.league_whitelist, settings.league_blacklist,
                     settings.sport_whitelist,
+                    settings.max_alerts_per_hour,
+                    sent_timestamps,
                 )
                 run_pressure_cycle(sportmonks_provider, db, notifier, settings.cooldown_minutes)
             except (ProviderError, RuntimeError, ValueError) as exc:
