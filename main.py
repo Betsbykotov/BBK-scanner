@@ -267,6 +267,7 @@ def main() -> int:
             lookback_minutes=settings.lookback_minutes,
             min_bookmakers=settings.min_bookmakers,
             velocity_threshold_pct_per_min=settings.velocity_threshold_pct_per_min,
+            sharp_live_max_velocity_pct_per_min=settings.sharp_live_max_velocity_pct_per_min,
             sharp_bookmakers=settings.sharp_bookmakers,
             sharp_bonus_multiplier=settings.sharp_bonus_multiplier,
             momentum_window_minutes=settings.momentum_window_minutes,

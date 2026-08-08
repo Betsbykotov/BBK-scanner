@@ -30,6 +30,7 @@ class OddsAnalyzer:
         lookback_minutes: int,
         min_bookmakers: int,
         velocity_threshold_pct_per_min: float = 0.5,
+        sharp_live_max_velocity_pct_per_min: float = 5.0,
         sharp_bookmakers: tuple[str, ...] = ("pinnacle",),
         sharp_bonus_multiplier: float = 1.15,
         score_weights: BBKScoreWeights = BBKScoreWeights(),
@@ -44,6 +45,7 @@ class OddsAnalyzer:
         self.lookback_minutes = lookback_minutes
         self.min_bookmakers = min_bookmakers
         self.velocity_threshold_pct_per_min = velocity_threshold_pct_per_min
+        self.sharp_live_max_velocity_pct_per_min = sharp_live_max_velocity_pct_per_min
         self.sharp_bookmakers = set(sharp_bookmakers)
         self.sharp_bonus_multiplier = sharp_bonus_multiplier
         self.score_weights = score_weights
@@ -92,6 +94,14 @@ class OddsAnalyzer:
                 previous = previous_map[quote.bookmaker_key]
                 movement = movements[quote.bookmaker_key]
                 velocity = velocities[quote.bookmaker_key]
+
+                if (
+                    quote.is_live
+                    and velocity is not None
+                    and velocity > self.sharp_live_max_velocity_pct_per_min
+                ):
+                    continue  # слишком резкий скачок на LIVE — похоже на реакцию рынка на уже забитый гол, а не sharp-сигнал до него
+
                 deviation = (
                     pct_change(market_average, quote.price)
                     if market_average is not None

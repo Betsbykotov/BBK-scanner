@@ -32,6 +32,7 @@ class Settings:
     lookback_minutes: int
     min_bookmakers: int
     velocity_threshold_pct_per_min: float
+    sharp_live_max_velocity_pct_per_min: float  # NEW: если LIVE-сигнал двигается быстрее этого — считаем, что рынок уже отреагировал на гол, гасим алерт
     sharp_bookmakers: tuple[str, ...]
     sharp_bonus_multiplier: float
     cooldown_minutes: int
@@ -72,6 +73,7 @@ class Settings:
             lookback_minutes=int(os.getenv("LOOKBACK_MINUTES", "30")),
             min_bookmakers=int(os.getenv("MIN_BOOKMAKERS", "2")),
             velocity_threshold_pct_per_min=float(os.getenv("VELOCITY_THRESHOLD_PCT_PER_MIN", "0.5")),
+            sharp_live_max_velocity_pct_per_min=float(os.getenv("SHARP_LIVE_MAX_VELOCITY_PCT_PER_MIN", "5.0")),
             sharp_bookmakers=tuple(
                 x.strip() for x in os.getenv("SHARP_BOOKMAKERS", "pinnacle").split(",") if x.strip()
             ),
