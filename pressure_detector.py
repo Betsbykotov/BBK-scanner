@@ -19,6 +19,21 @@ from __future__ import annotations
 
 from notifier import _detect_country_flag
 
+PRESSURE_DETECTOR_VERSION = "v3-country-iso2-2026-08-10"
+
+
+def _flag_from_iso2(iso2: str | None) -> str:
+    """
+    Строит эмодзи-флаг из ISO 3166-1 alpha-2 кода страны (например "BR" -> 🇧🇷).
+    Это математическая формула (regional indicator symbols), а не словарь —
+    работает для любой страны без ручного перечисления. Возвращает "" если
+    код отсутствует или некорректен.
+    """
+    if not iso2 or len(iso2) != 2 or not iso2.isalpha():
+        return ""
+    iso2 = iso2.upper()
+    return "".join(chr(0x1F1E6 + (ord(ch) - ord("A"))) for ch in iso2)
+
 MIN_MINUTE = 15
 MAX_MINUTE = 80
 
@@ -98,6 +113,15 @@ def detect_pressure_alerts(matches: list[dict]) -> list[dict]:
     Возвращает список алертов вида:
     [{"dedup_key": str, "message": str, "score": float}, ...]
     """
+    print(f"[PRESSURE DETECTOR] версия модуля: {PRESSURE_DETECTOR_VERSION}", flush=True)
+    if matches:
+        m0 = matches[0]
+        print(
+            f"[PRESSURE DETECTOR] пример match keys: league_name={m0.get('league_name')!r} "
+            f"country_name={m0.get('country_name')!r} country_iso2={m0.get('country_iso2')!r}",
+            flush=True,
+        )
+
     alerts = []
 
     for match in matches:
@@ -174,17 +198,31 @@ def detect_pressure_alerts(matches: list[dict]) -> list[dict]:
         home_score = match.get("home_score", 0)
         away_score = match.get("away_score", 0)
 
-        # Страна/флаг — определяются по названию лиги (поле "league_name" в
-        # словаре match), той же функцией _detect_country_flag из notifier.py,
-        # чтобы SHARP/MOMENTUM и PRESSURE алерты форматировали страну
-        # одинаково. Если SportmonksProvider не кладёт league_name в match —
-        # эта строка просто не появится (не показываем "неизвестно").
-        country_flag = _detect_country_flag(match.get("league_name"))
+        # Страна/флаг — берутся напрямую из API Sportmonks (league.country),
+        # а не угадываются по названию лиги: одинаковые названия лиг
+        # встречаются в разных странах ("Serie A" — Италия И Бразилия,
+        # "Primera Division" — Аргентина, Чили, Уругвай и др.), поэтому
+        # текстовое угадывание даёт неверные флаги. Если по какой-то причине
+        # country_name/country_iso2 не пришли от API — фолбэк на эвристику
+        # по названию лиги (та же, что у SHARP/MOMENTUM), лучше приблизительно,
+        # чем совсем без страны.
+        country_name = match.get("country_name")
+        country_iso2 = match.get("country_iso2")
+        league_name_val = match.get("league_name")
+
+        if country_name and country_iso2:
+            flag = _flag_from_iso2(country_iso2)
+            country_flag = f"{country_name} {flag}" if flag else country_name
+        elif league_name_val:
+            country_flag = _detect_country_flag(league_name_val)
+        else:
+            country_flag = ""
+
         league_line = ""
-        if match.get("league_name"):
+        if league_name_val:
             league_line = (
-                f"🌍 {match['league_name']} | {country_flag}"
-                if country_flag else f"🌍 {match['league_name']}"
+                f"🌍 {league_name_val} | {country_flag}"
+                if country_flag else f"🌍 {league_name_val}"
             )
 
         header = f"📊 xG Статистика | {match['home_team']} — {match['away_team']} ({minute}', {home_score}:{away_score})"
