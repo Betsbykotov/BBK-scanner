@@ -17,6 +17,8 @@
 
 from __future__ import annotations
 
+from notifier import _detect_country_flag
+
 MIN_MINUTE = 15
 MAX_MINUTE = 80
 
@@ -172,16 +174,29 @@ def detect_pressure_alerts(matches: list[dict]) -> list[dict]:
         home_score = match.get("home_score", 0)
         away_score = match.get("away_score", 0)
 
+        # Страна/флаг — определяются по названию лиги (поле "league_name" в
+        # словаре match), той же функцией _detect_country_flag из notifier.py,
+        # чтобы SHARP/MOMENTUM и PRESSURE алерты форматировали страну
+        # одинаково. Если SportmonksProvider не кладёт league_name в match —
+        # эта строка просто не появится (не показываем "неизвестно").
+        country_flag = _detect_country_flag(match.get("league_name"))
+        league_line = ""
+        if match.get("league_name"):
+            league_line = (
+                f"🌍 {match['league_name']} | {country_flag}"
+                if country_flag else f"🌍 {match['league_name']}"
+            )
+
         header = f"📊 xG Статистика | {match['home_team']} — {match['away_team']} ({minute}', {home_score}:{away_score})"
         dominance_line = f"Доминирует: {dominant_team} | Сила сигнала: {score:.0f}%"
         if is_escalating:
             dominance_line += " | 🔥 Давление нарастает"
 
-        message_parts = [
-            header,
-            dominance_line,
-            " | ".join(reason_parts),
-        ]
+        message_parts = [header]
+        if league_line:
+            message_parts.append(league_line)
+        message_parts.append(dominance_line)
+        message_parts.append(" | ".join(reason_parts))
         if home_pressure_total or away_pressure_total:
             message_parts.append(f"Pressure за матч: {home_pressure_total:.0f}-{away_pressure_total:.0f}")
         if extra_lines:
