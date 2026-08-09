@@ -5,14 +5,10 @@ Sportmonks Provider — live xG и Pressure Index по матчам.
 asyncio, вписывается в существующий цикл run_cycle() / time.sleep().
 Полностью изолирован от OddsCorp/Odds-API: если Sportmonks недоступен —
 это не мешает основному циклу коэффициентов.
-
-# DEBUG: временный dump сырого fixture в лог для диагностики парсинга
-# минуты/xG/pressure. Убрать после диагностики (см. флаг ниже).
 """
 
 from __future__ import annotations
 
-import json
 import logging
 from datetime import datetime, timezone
 
@@ -21,11 +17,6 @@ import requests
 logger = logging.getLogger("sportmonks_provider")
 
 BASE_URL = "https://api.sportmonks.com/v3/football"
-
-# DEBUG: временный флаг — как только структуру увидели и починили парсинг,
-# выставить в False (или вырезать блок целиком).
-_DEBUG_DUMP_RAW_FIXTURE = True
-_debug_dumped_once = False
 
 
 class SportmonksProvider:
@@ -73,28 +64,6 @@ class SportmonksProvider:
         if not data or "data" not in data:
             return []
 
-        # DEBUG: логируем ответ верхнего уровня один раз за процесс —
-        # интересует, есть ли ключ "message"/"warnings" про невалидные include
-        global _debug_dumped_once
-        if _DEBUG_DUMP_RAW_FIXTURE and not _debug_dumped_once:
-            top_level_keys = list(data.keys())
-            print(f"[SPORTMONKS DEBUG] top-level keys ответа: {top_level_keys}", flush=True)
-            if "message" in data:
-                print(f"[SPORTMONKS DEBUG] message: {data.get('message')}", flush=True)
-            if "warnings" in data:
-                print(f"[SPORTMONKS DEBUG] warnings: {data.get('warnings')}", flush=True)
-
-            if data["data"]:
-                raw_fixture = data["data"][0]
-                dump = json.dumps(raw_fixture, ensure_ascii=False)
-                # режем на куски по 1500 символов, чтобы не обрезало логами Railway
-                chunk_size = 1500
-                chunks = [dump[i:i + chunk_size] for i in range(0, len(dump), chunk_size)]
-                print(f"[SPORTMONKS DEBUG] raw fixture, {len(chunks)} частей, длина {len(dump)}:", flush=True)
-                for idx, chunk in enumerate(chunks):
-                    print(f"[SPORTMONKS DEBUG] part {idx+1}/{len(chunks)}: {chunk}", flush=True)
-                _debug_dumped_once = True
-
         results = []
         for fixture in data["data"]:
             try:
@@ -126,11 +95,27 @@ class SportmonksProvider:
                 away_name = p.get("name", "Away")
                 away_id = p.get("id")
 
+        pressure_entries = fixture.get("pressure", []) or []
+        xg_entries = fixture.get("xgfixture", []) or []
+
+        # У /livescores нет отдельного "time"/"minute" на уровне fixture —
+        # достаём текущую минуту как максимум по таймсерии pressure (она есть
+        # почти всегда, пока матч live). Фолбэк на xgfixture, если pressure пуст.
         time_block = fixture.get("time")
         minute = time_block.get("minute") if isinstance(time_block, dict) else fixture.get("minute")
+        if not minute:
+            minute = self._max_minute(pressure_entries) or self._max_minute(xg_entries)
 
-        home_xg, away_xg = self._extract_team_metric(fixture.get("xgfixture", []) or [], home_id, away_id)
-        home_pressure, away_pressure = self._extract_team_metric(fixture.get("pressure", []) or [], home_id, away_id)
+        # pressure — таймсерия по минутам: {"participant_id", "minute", "pressure"}.
+        # Суммируем по команде за весь матч → кумулятивный Pressure Index.
+        home_pressure, away_pressure = self._sum_team_metric(
+            pressure_entries, home_id, away_id, value_keys=("pressure", "value")
+        )
+        # xgfixture может быть в том же плоском формате ({"expected_goals"}/{"xg"})
+        # либо в старом вложенном ({"data": {"value": ...}}) — пробуем оба.
+        home_xg, away_xg = self._sum_team_metric(
+            xg_entries, home_id, away_id, value_keys=("expected_goals", "xg", "value")
+        )
 
         stats = fixture.get("statistics", []) or []
         home_shots, away_shots = self._extract_stat_by_name(stats, home_id, away_id, ("shots total", "total shots"))
@@ -162,11 +147,29 @@ class SportmonksProvider:
         }
 
     @staticmethod
-    def _extract_team_metric(entries: list, home_id, away_id) -> tuple[float, float]:
+    def _max_minute(entries: list) -> int:
+        """Максимальная 'minute' среди записей таймсерии (pressure/xgfixture)."""
+        best = 0
+        for entry in entries:
+            m = entry.get("minute")
+            try:
+                m = int(m)
+            except (TypeError, ValueError):
+                continue
+            if m > best:
+                best = m
+        return best
+
+    @staticmethod
+    def _sum_team_metric(entries: list, home_id, away_id, value_keys: tuple[str, ...]) -> tuple[float, float]:
         """
-        Достаёт значение метрики (xG или pressure) по home/away.
-        Формат Sportmonks для этих include не 100% зафиксирован в документации
-        на всех тарифах — пробуем несколько ключей с фолбэком.
+        Суммирует значение метрики по home/away за все записи таймсерии
+        (pressure и xgfixture у Sportmonks — это ряд записей по минутам,
+        а не одно агрегированное число на команду).
+
+        value_keys — список имён полей-кандидатов, проверяются по порядку,
+        плюс всегда пробуется вложенный {"data": {"value": ...}} формат
+        (старый/другой стиль ответа Sportmonks на некоторых тарифах).
         """
         home_val, away_val = 0.0, 0.0
         for entry in entries:
@@ -175,8 +178,19 @@ class SportmonksProvider:
                 or entry.get("team_id")
                 or (entry.get("participant") or {}).get("id")
             )
+            if participant_id not in (home_id, away_id):
+                continue
+
+            value = None
             data_block = entry.get("data")
-            value = data_block.get("value") if isinstance(data_block, dict) else entry.get("value")
+            if isinstance(data_block, dict) and data_block.get("value") is not None:
+                value = data_block.get("value")
+            else:
+                for key in value_keys:
+                    if entry.get(key) is not None:
+                        value = entry.get(key)
+                        break
+
             if value is None:
                 continue
             try:
@@ -185,11 +199,11 @@ class SportmonksProvider:
                 continue
 
             if participant_id == home_id:
-                home_val = value
+                home_val += value
             elif participant_id == away_id:
-                away_val = value
+                away_val += value
 
-        return home_val, away_val
+        return round(home_val, 2), round(away_val, 2)
 
     @staticmethod
     def _extract_stat_by_name(entries: list, home_id, away_id, name_keywords: tuple[str, ...]) -> tuple[float, float]:
