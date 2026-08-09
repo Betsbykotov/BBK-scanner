@@ -139,9 +139,10 @@ class SportmonksProvider:
         if league_name and not (country_name and country_iso2):
             global _debug_league_logged_count
             if _debug_league_logged_count < 5:
-                logger.warning(
+                print(
                     f"[LEAGUE DEBUG] fixture={fixture_id} league_name={league_name!r} "
-                    f"raw league block: {json.dumps(league_block, ensure_ascii=False)[:800]}"
+                    f"raw league block: {json.dumps(league_block, ensure_ascii=False)[:800]}",
+                    flush=True,
                 )
                 _debug_league_logged_count += 1
 
