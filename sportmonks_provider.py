@@ -78,11 +78,11 @@ class SportmonksProvider:
         global _debug_dumped_once
         if _DEBUG_DUMP_RAW_FIXTURE and not _debug_dumped_once:
             top_level_keys = list(data.keys())
-            logger.info(f"[SPORTMONKS DEBUG] top-level keys ответа: {top_level_keys}")
+            print(f"[SPORTMONKS DEBUG] top-level keys ответа: {top_level_keys}", flush=True)
             if "message" in data:
-                logger.info(f"[SPORTMONKS DEBUG] message: {data.get('message')}")
+                print(f"[SPORTMONKS DEBUG] message: {data.get('message')}", flush=True)
             if "warnings" in data:
-                logger.info(f"[SPORTMONKS DEBUG] warnings: {data.get('warnings')}")
+                print(f"[SPORTMONKS DEBUG] warnings: {data.get('warnings')}", flush=True)
 
             if data["data"]:
                 raw_fixture = data["data"][0]
@@ -90,9 +90,9 @@ class SportmonksProvider:
                 # режем на куски по 1500 символов, чтобы не обрезало логами Railway
                 chunk_size = 1500
                 chunks = [dump[i:i + chunk_size] for i in range(0, len(dump), chunk_size)]
-                logger.info(f"[SPORTMONKS DEBUG] raw fixture, {len(chunks)} частей, длина {len(dump)}:")
+                print(f"[SPORTMONKS DEBUG] raw fixture, {len(chunks)} частей, длина {len(dump)}:", flush=True)
                 for idx, chunk in enumerate(chunks):
-                    logger.info(f"[SPORTMONKS DEBUG] part {idx+1}/{len(chunks)}: {chunk}")
+                    print(f"[SPORTMONKS DEBUG] part {idx+1}/{len(chunks)}: {chunk}", flush=True)
                 _debug_dumped_once = True
 
         results = []
