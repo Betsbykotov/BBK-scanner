@@ -27,6 +27,212 @@ def _format_kickoff(commence_time: str) -> str:
         return "время неизвестно"
 
 
+# ---------------------------------------------------------------------------
+# Определение страны и флага по названию лиги.
+#
+# У OddsCorp/Sportmonks нет отдельного поля country_code в тех данных, что
+# приходят в Quote — есть только league_name (строка вида "Premier League",
+# "La Liga", "2. Bundesliga"). Поэтому страна определяется эвристически:
+# ищем в названии лиги подстроку из словаря ниже (регистронезависимо,
+# сначала более длинные/специфичные ключи, чтобы "Premier League" не
+# перепутать с "Premier League 2" и т.п. — порядок проверки от специфичного
+# к общему).
+#
+# Международные турниры (Лига Чемпионов, ЧМ, Евро и т.п.) не привязаны к
+# одной стране — для них отдельная пометка 🏆 без странового флага.
+# Если лига не найдена в словаре — строка просто не показывается (не
+# показываем "неизвестный" флаг, чтобы не вводить в заблуждение).
+# ---------------------------------------------------------------------------
+
+_INTERNATIONAL_MARKERS = (
+    "champions league", "europa league", "conference league",
+    "world cup", "euro ", "euro202", "copa america", "copa libertadores",
+    "copa sudamericana", "nations league", "afc champions", "caf champions",
+    "concacaf", "club world cup", "international friendlies", "friendlies",
+)
+
+# (подстрока_в_названии_лиги, страна, флаг) — порядок важен: сверху вниз,
+# первое совпадение побеждает, поэтому специфичные лиги идут раньше общих.
+_LEAGUE_COUNTRY_MAP: list[tuple[str, str, str]] = [
+    # Англия
+    ("premier league", "Англия", "🏴󠁧󠁢󠁥󠁮󠁧󠁿"),
+    ("championship", "Англия", "🏴󠁧󠁢󠁥󠁮󠁧󠁿"),
+    ("league one", "Англия", "🏴󠁧󠁢󠁥󠁮󠁧󠁿"),
+    ("league two", "Англия", "🏴󠁧󠁢󠁥󠁮󠁧󠁿"),
+    ("fa cup", "Англия", "🏴󠁧󠁢󠁥󠁮󠁧󠁿"),
+    ("efl cup", "Англия", "🏴󠁧󠁢󠁥󠁮󠁧󠁿"),
+    ("carabao cup", "Англия", "🏴󠁧󠁢󠁥󠁮󠁧󠁿"),
+    # Шотландия
+    ("scottish premiership", "Шотландия", "🏴󠁧󠁢󠁳󠁣󠁴󠁿"),
+    ("scottish", "Шотландия", "🏴󠁧󠁢󠁳󠁣󠁴󠁿"),
+    # Уэльс
+    ("welsh premier", "Уэльс", "🏴󠁧󠁢󠁷󠁬󠁳󠁿"),
+    # Испания
+    ("la liga", "Испания", "🇪🇸"),
+    ("laliga", "Испания", "🇪🇸"),
+    ("segunda division", "Испания", "🇪🇸"),
+    ("copa del rey", "Испания", "🇪🇸"),
+    # Германия
+    ("bundesliga", "Германия", "🇩🇪"),
+    ("dfb pokal", "Германия", "🇩🇪"),
+    ("dfb-pokal", "Германия", "🇩🇪"),
+    # Италия
+    ("serie a", "Италия", "🇮🇹"),
+    ("serie b", "Италия", "🇮🇹"),
+    ("coppa italia", "Италия", "🇮🇹"),
+    # Франция
+    ("ligue 1", "Франция", "🇫🇷"),
+    ("ligue 2", "Франция", "🇫🇷"),
+    ("coupe de france", "Франция", "🇫🇷"),
+    # Нидерланды
+    ("eredivisie", "Нидерланды", "🇳🇱"),
+    ("eerste divisie", "Нидерланды", "🇳🇱"),
+    # Португалия
+    ("primeira liga", "Португалия", "🇵🇹"),
+    ("liga portugal", "Португалия", "🇵🇹"),
+    # Бельгия
+    ("jupiler", "Бельгия", "🇧🇪"),
+    ("belgian pro league", "Бельгия", "🇧🇪"),
+    # Турция
+    ("super lig", "Турция", "🇹🇷"),
+    ("süper lig", "Турция", "🇹🇷"),
+    # Украина
+    ("ukrainian premier", "Украина", "🇺🇦"),
+    ("upl", "Украина", "🇺🇦"),
+    ("уперша", "Украина", "🇺🇦"),
+    # Польша
+    ("ekstraklasa", "Польша", "🇵🇱"),
+    # Австрия
+    ("austrian bundesliga", "Австрия", "🇦🇹"),
+    # Швейцария
+    ("swiss super league", "Швейцария", "🇨🇭"),
+    # Дания
+    ("danish superliga", "Дания", "🇩🇰"),
+    ("superliga", "Дания", "🇩🇰"),
+    # Норвегия
+    ("eliteserien", "Норвегия", "🇳🇴"),
+    # Швеция
+    ("allsvenskan", "Швеция", "🇸🇪"),
+    # Греция
+    ("super league greece", "Греция", "🇬🇷"),
+    ("greek super league", "Греция", "🇬🇷"),
+    # Чехия
+    ("czech first league", "Чехия", "🇨🇿"),
+    ("fortuna liga", "Чехия", "🇨🇿"),
+    # Хорватия
+    ("hnl", "Хорватия", "🇭🇷"),
+    ("croatian first", "Хорватия", "🇭🇷"),
+    # Сербия
+    ("serbian superliga", "Сербия", "🇷🇸"),
+    # Румыния
+    ("liga i", "Румыния", "🇷🇴"),
+    # Израиль
+    ("israeli premier", "Израиль", "🇮🇱"),
+    # Саудовская Аравия
+    ("saudi pro league", "Саудовская Аравия", "🇸🇦"),
+    ("saudi professional", "Саудовская Аравия", "🇸🇦"),
+    # ОАЭ / Катар
+    ("uae pro league", "ОАЭ", "🇦🇪"),
+    ("qatar stars league", "Катар", "🇶🇦"),
+    # Бразилия
+    ("brasileirao", "Бразилия", "🇧🇷"),
+    ("serie a brazil", "Бразилия", "🇧🇷"),
+    ("campeonato brasileiro", "Бразилия", "🇧🇷"),
+    ("copa do brasil", "Бразилия", "🇧🇷"),
+    # Аргентина
+    ("liga profesional", "Аргентина", "🇦🇷"),
+    ("primera division argentina", "Аргентина", "🇦🇷"),
+    ("argentina primera", "Аргентина", "🇦🇷"),
+    # Прочая Южная Америка
+    ("primera division uruguay", "Уругвай", "🇺🇾"),
+    ("primera division chile", "Чили", "🇨🇱"),
+    ("categoria primera a", "Колумбия", "🇨🇴"),
+    ("liga pro ecuador", "Эквадор", "🇪🇨"),
+    ("liga 1 peru", "Перу", "🇵🇪"),
+    ("paraguay", "Парагвай", "🇵🇾"),
+    ("venezuela", "Венесуэла", "🇻🇪"),
+    ("bolivia", "Боливия", "🇧🇴"),
+    # США / Мексика / Канада
+    ("mls", "США", "🇺🇸"),
+    ("major league soccer", "США", "🇺🇸"),
+    ("usl championship", "США", "🇺🇸"),
+    ("liga mx", "Мексика", "🇲🇽"),
+    ("canadian premier", "Канада", "🇨🇦"),
+    # Азия
+    ("j1 league", "Япония", "🇯🇵"),
+    ("j2 league", "Япония", "🇯🇵"),
+    ("k league", "Южная Корея", "🇰🇷"),
+    ("chinese super league", "Китай", "🇨🇳"),
+    ("csl", "Китай", "🇨🇳"),
+    ("thai league", "Таиланд", "🇹🇭"),
+    ("v.league", "Вьетнам", "🇻🇳"),
+    ("indonesian liga", "Индонезия", "🇮🇩"),
+    ("indian super league", "Индия", "🇮🇳"),
+    # Африка
+    ("egyptian premier", "Египет", "🇪🇬"),
+    ("south african premier", "ЮАР", "🇿🇦"),
+    ("botola", "Марокко", "🇲🇦"),
+    ("tunisian ligue", "Тунис", "🇹🇳"),
+    ("nigerian professional", "Нигерия", "🇳🇬"),
+    # Океания
+    ("a-league", "Австралия", "🇦🇺"),
+    ("new zealand", "Новая Зеландия", "🇳🇿"),
+    # СНГ
+    ("russian premier", "Россия", "🇷🇺"),
+    ("kazakhstan premier", "Казахстан", "🇰🇿"),
+    ("belarusian premier", "Беларусь", "🇧🇾"),
+    ("uzbekistan super", "Узбекистан", "🇺🇿"),
+    ("georgian erovnuli", "Грузия", "🇬🇪"),
+    ("armenian premier", "Армения", "🇦🇲"),
+    ("azerbaijan premier", "Азербайджан", "🇦🇿"),
+    # Прочая Европа
+    ("finnish veikkausliiga", "Финляндия", "🇫🇮"),
+    ("hungarian nb", "Венгрия", "🇭🇺"),
+    ("slovak super liga", "Словакия", "🇸🇰"),
+    ("slovenian prvaliga", "Словения", "🇸🇮"),
+    ("bulgarian first", "Болгария", "🇧🇬"),
+    ("icelandic urvalsdeild", "Исландия", "🇮🇸"),
+    ("irish premier", "Ирландия", "🇮🇪"),
+    ("league of ireland", "Ирландия", "🇮🇪"),
+    ("cypriot first", "Кипр", "🇨🇾"),
+    ("moldovan", "Молдова", "🇲🇩"),
+    ("estonian meistriliiga", "Эстония", "🇪🇪"),
+    ("latvian virsliga", "Латвия", "🇱🇻"),
+    ("lithuanian a lyga", "Литва", "🇱🇹"),
+    ("bosnian premier", "Босния", "🇧🇦"),
+    ("albanian superliga", "Албания", "🇦🇱"),
+    ("montenegrin", "Черногория", "🇲🇪"),
+    ("macedonian first", "Северная Македония", "🇲🇰"),
+    ("kosovo", "Косово", "🇽🇰"),
+    ("faroe islands", "Фарерские острова", "🇫🇴"),
+    ("maltese premier", "Мальта", "🇲🇹"),
+    ("luxembourg", "Люксембург", "🇱🇺"),
+    ("andorra", "Андорра", "🇦🇩"),
+    ("gibraltar", "Гибралтар", "🇬🇮"),
+    ("san marino", "Сан-Марино", "🇸🇲"),
+]
+
+
+def _detect_country_flag(league_name: str | None) -> str:
+    """Возвращает строку вида 'Англия 🏴󠁧󠁢󠁥󠁮󠁧󠁿' или '' если не удалось определить.
+
+    Для международных турниров (ЛЧ, ЛЕ, ЧМ и т.п.) возвращает '🏆 Международный'.
+    """
+    if not league_name:
+        return ""
+    name_lower = league_name.lower()
+
+    for marker in _INTERNATIONAL_MARKERS:
+        if marker in name_lower:
+            return "🏆 Международный"
+
+    for substring, country, flag in _LEAGUE_COUNTRY_MAP:
+        if substring in name_lower:
+            return f"{country} {flag}"
+
+    return ""
+
+
 def format_alert(alert: Alert) -> str:
     q = alert.quote
     point = "" if q.point is None else f" {q.point:g}"
@@ -38,7 +244,14 @@ def format_alert(alert: Alert) -> str:
     )
     sharp_mark = " 🎯 <i>sharp-источник</i>" if alert.is_sharp_source else ""
     match_status = "🔴 <b>LIVE</b> ⚽" if q.is_live else "⏳ <b>Прематч</b>"
-    league_line = f"🌍 {_esc(q.league_name)}\n" if q.league_name else ""
+
+    country_flag = _detect_country_flag(q.league_name)
+    if q.league_name and country_flag:
+        league_line = f"🌍 {_esc(q.league_name)} | {country_flag}\n"
+    elif q.league_name:
+        league_line = f"🌍 {_esc(q.league_name)}\n"
+    else:
+        league_line = ""
 
     # ИСПРАВЛЕНО: для LIVE-матчей OddsCorp часто не присылает start_at в meta
     # (матч уже начался, "время начала в будущем" не имеет смысла) — раньше
