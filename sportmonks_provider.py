@@ -9,6 +9,7 @@ asyncio, вписывается в существующий цикл run_cycle()
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timezone
 
@@ -17,6 +18,13 @@ import requests
 logger = logging.getLogger("sportmonks_provider")
 
 BASE_URL = "https://api.sportmonks.com/v3/football"
+
+_DEBUG_DUMP_RAW_FIXTURE = False
+_debug_dumped_once = False
+
+# Сколько последних минут матча учитываем для "текущего" Pressure Index —
+# отражает, что происходит прямо сейчас, а не с 1-й минуты матча.
+PRESSURE_RECENT_WINDOW_MINUTES = 15
 
 
 class SportmonksProvider:
@@ -64,6 +72,25 @@ class SportmonksProvider:
         if not data or "data" not in data:
             return []
 
+        global _debug_dumped_once
+        if _DEBUG_DUMP_RAW_FIXTURE and not _debug_dumped_once:
+            top_level_keys = list(data.keys())
+            print(f"[SPORTMONKS DEBUG] top-level keys ответа: {top_level_keys}", flush=True)
+            if "message" in data:
+                print(f"[SPORTMONKS DEBUG] message: {data.get('message')}", flush=True)
+            if "warnings" in data:
+                print(f"[SPORTMONKS DEBUG] warnings: {data.get('warnings')}", flush=True)
+
+            if data["data"]:
+                raw_fixture = data["data"][0]
+                dump = json.dumps(raw_fixture, ensure_ascii=False)
+                chunk_size = 1500
+                chunks = [dump[i:i + chunk_size] for i in range(0, len(dump), chunk_size)]
+                print(f"[SPORTMONKS DEBUG] raw fixture, {len(chunks)} частей, длина {len(dump)}:", flush=True)
+                for idx, chunk in enumerate(chunks):
+                    print(f"[SPORTMONKS DEBUG] part {idx+1}/{len(chunks)}: {chunk}", flush=True)
+                _debug_dumped_once = True
+
         results = []
         for fixture in data["data"]:
             try:
@@ -98,21 +125,26 @@ class SportmonksProvider:
         pressure_entries = fixture.get("pressure", []) or []
         xg_entries = fixture.get("xgfixture", []) or []
 
-        # У /livescores нет отдельного "time"/"minute" на уровне fixture —
-        # достаём текущую минуту как максимум по таймсерии pressure (она есть
-        # почти всегда, пока матч live). Фолбэк на xgfixture, если pressure пуст.
         time_block = fixture.get("time")
         minute = time_block.get("minute") if isinstance(time_block, dict) else fixture.get("minute")
         if not minute:
             minute = self._max_minute(pressure_entries) or self._max_minute(xg_entries)
 
         # pressure — таймсерия по минутам: {"participant_id", "minute", "pressure"}.
-        # Суммируем по команде за весь матч → кумулятивный Pressure Index.
+        # Кумулятивная сумма за весь матч копит шум с ранних минут и слабо отражает
+        # "что происходит прямо сейчас" — поэтому основной сигнал считаем в скользящем
+        # окне последних PRESSURE_RECENT_WINDOW_MINUTES минут, а полную сумму держим
+        # отдельно как справочную (для сообщения/отладки).
+        recent_pressure_entries = self._filter_by_minute_window(
+            pressure_entries, max(0, minute - PRESSURE_RECENT_WINDOW_MINUTES)
+        )
         home_pressure, away_pressure = self._sum_team_metric(
+            recent_pressure_entries, home_id, away_id, value_keys=("pressure", "value")
+        )
+        home_pressure_total, away_pressure_total = self._sum_team_metric(
             pressure_entries, home_id, away_id, value_keys=("pressure", "value")
         )
-        # xgfixture может быть в том же плоском формате ({"expected_goals"}/{"xg"})
-        # либо в старом вложенном ({"data": {"value": ...}}) — пробуем оба.
+        # xG — стандартная накопительная метрика, суммируем за весь матч как обычно.
         home_xg, away_xg = self._sum_team_metric(
             xg_entries, home_id, away_id, value_keys=("expected_goals", "xg", "value")
         )
@@ -134,6 +166,8 @@ class SportmonksProvider:
             "away_xg": away_xg,
             "home_pressure": home_pressure,
             "away_pressure": away_pressure,
+            "home_pressure_total": home_pressure_total,
+            "away_pressure_total": away_pressure_total,
             "home_shots": home_shots,
             "away_shots": away_shots,
             "home_shots_on_target": home_shots_on_target,
@@ -161,15 +195,25 @@ class SportmonksProvider:
         return best
 
     @staticmethod
+    def _filter_by_minute_window(entries: list, min_minute: int) -> list:
+        """Оставляет только записи таймсерии с minute >= min_minute."""
+        filtered = []
+        for entry in entries:
+            m = entry.get("minute")
+            try:
+                m = int(m)
+            except (TypeError, ValueError):
+                continue
+            if m >= min_minute:
+                filtered.append(entry)
+        return filtered
+
+    @staticmethod
     def _sum_team_metric(entries: list, home_id, away_id, value_keys: tuple[str, ...]) -> tuple[float, float]:
         """
         Суммирует значение метрики по home/away за все записи таймсерии
         (pressure и xgfixture у Sportmonks — это ряд записей по минутам,
         а не одно агрегированное число на команду).
-
-        value_keys — список имён полей-кандидатов, проверяются по порядку,
-        плюс всегда пробуется вложенный {"data": {"value": ...}} формат
-        (старый/другой стиль ответа Sportmonks на некоторых тарифах).
         """
         home_val, away_val = 0.0, 0.0
         for entry in entries:
@@ -209,9 +253,6 @@ class SportmonksProvider:
     def _extract_stat_by_name(entries: list, home_id, away_id, name_keywords: tuple[str, ...]) -> tuple[float, float]:
         """
         Достаёт значение статистики (удары, угловые, владение и т.п.) по названию типа.
-        Формат type-имён у Sportmonks не полностью зафиксирован в документации на всех
-        тарифах — сравниваем по подстроке в названии типа, регистронезависимо.
-        Если статистика не найдена — возвращает (0.0, 0.0), не бросает исключение.
         """
         home_val, away_val = 0.0, 0.0
         for entry in entries:
