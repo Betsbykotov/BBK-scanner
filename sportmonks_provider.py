@@ -21,6 +21,7 @@ BASE_URL = "https://api.sportmonks.com/v3/football"
 
 _DEBUG_DUMP_RAW_FIXTURE = False
 _debug_dumped_once = False
+_debug_league_logged_count = 0
 
 # Сколько последних минут матча учитываем для "текущего" Pressure Index —
 # отражает, что происходит прямо сейчас, а не с 1-й минуты матча.
@@ -67,7 +68,7 @@ class SportmonksProvider:
         """
         data = self._request(
             "/livescores",
-            params={"include": "participants;scores;xgfixture;pressure;statistics.type;league"},
+            params={"include": "participants;scores;xgfixture;pressure;statistics.type;league.country"},
         )
         if not data or "data" not in data:
             return []
@@ -122,12 +123,27 @@ class SportmonksProvider:
                 away_name = p.get("name", "Away")
                 away_id = p.get("id")
 
-        # Название лиги — приходит вместе с fixture, когда "league" запрошен
-        # в include (см. get_live_pressure_data). Используется дальше в
-        # notifier.py / pressure_detector.py для определения страны+флага
-        # по тому же словарю-маппингу, что и SHARP/MOMENTUM алерты.
+        # Название лиги + реальная страна — приходят вместе с fixture, когда
+        # "league.country" запрошен в include (см. get_live_pressure_data).
+        # ВАЖНО: страну нельзя угадывать по названию лиги текстом — одинаковые
+        # названия встречаются в разных странах (например "Serie A" — и в
+        # Италии, и в Бразилии; "Primera Division" — в Аргентине, Чили,
+        # Уругвае и др.). Поэтому берём страну напрямую из API, а не из
+        # словаря-эвристики.
         league_block = fixture.get("league") or {}
         league_name = league_block.get("name")
+        country_block = league_block.get("country") or {}
+        country_name = country_block.get("name")
+        country_iso2 = country_block.get("iso2")
+
+        if league_name and not (country_name and country_iso2):
+            global _debug_league_logged_count
+            if _debug_league_logged_count < 5:
+                logger.warning(
+                    f"[LEAGUE DEBUG] fixture={fixture_id} league_name={league_name!r} "
+                    f"raw league block: {json.dumps(league_block, ensure_ascii=False)[:800]}"
+                )
+                _debug_league_logged_count += 1
 
         pressure_entries = fixture.get("pressure", []) or []
         xg_entries = fixture.get("xgfixture", []) or []
@@ -166,6 +182,8 @@ class SportmonksProvider:
             "home_team": home_name,
             "away_team": away_name,
             "league_name": league_name,
+            "country_name": country_name,
+            "country_iso2": country_iso2,
             "minute": minute or 0,
             "home_score": home_score,
             "away_score": away_score,
