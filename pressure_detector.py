@@ -17,20 +17,21 @@
 
 from __future__ import annotations
 
-MIN_MINUTE = 15                 # не проверяем матчи в первые 15 минут (мало данных)
-MAX_MINUTE = 80                 # после 80-й минуты сигнал уже малополезен
+MIN_MINUTE = 15
+MAX_MINUTE = 80
 
-# Порог "заметного перекоса" в долях (%) — ниже него метрика считается ровной
-# и не участвует ни в подсчёте согласованности, ни в итоговом score.
 METRIC_SHARE_GAP_THRESHOLD = 15.0
 
-# Минимум метрик, согласованно указывающих на одну команду, чтобы завести алерт.
 MIN_METRICS_REQUIRED = 2
 
-# Итоговый composite score ниже этого — сигнал слишком слабый, не алертим.
 MIN_COMPOSITE_SCORE = 40.0
 
-# Вес каждой метрики в итоговом score.
+# Насколько доля команды в Pressure за последние 15 минут должна быть выше
+# её доли за весь матч (в процентных пунктах), чтобы пометить "давление
+# нарастает" — команда не просто ровно доминирует с начала игры, а разгоняется
+# именно сейчас, это более сильный сигнал "ещё гол близко".
+PRESSURE_ESCALATION_THRESHOLD = 15.0
+
 METRIC_WEIGHTS = {
     "xg": 0.30,
     "pressure": 0.30,
@@ -65,10 +66,6 @@ def _fmt_stat_line(label: str, home_val: float, away_val: float) -> str | None:
 def _composite_score(gaps: dict[str, float], dominant_is_home: bool) -> tuple[float, list[str]]:
     """
     Взвешенное среднее по метрикам, которые СОГЛАСУЮТСЯ с доминирующей командой.
-    Метрика "согласуется", если её gap по знаку и модулю (>= порога) указывает
-    на ту же команду, что и итоговый dominant_team.
-
-    Возвращает (score 0-100, список имён метрик, вошедших в подсчёт).
     """
     weighted_sum = 0.0
     weight_total = 0.0
@@ -79,7 +76,7 @@ def _composite_score(gaps: dict[str, float], dominant_is_home: bool) -> tuple[fl
             continue
         metric_favors_home = gap > 0
         if metric_favors_home != dominant_is_home:
-            continue  # метрика указывает на другую команду — не учитываем в score
+            continue
 
         weight = METRIC_WEIGHTS.get(metric, 0.0)
         weighted_sum += weight * abs(gap)
@@ -98,10 +95,6 @@ def detect_pressure_alerts(matches: list[dict]) -> list[dict]:
 
     Возвращает список алертов вида:
     [{"dedup_key": str, "message": str, "score": float}, ...]
-
-    "score" нужен main.py для сортировки при срезе часовым лимитом —
-    чтобы при MAX_ALERTS_PER_HOUR в первую очередь уходили самые
-    убедительные сигналы, а не первые попавшиеся по порядку.
     """
     alerts = []
 
@@ -137,13 +130,24 @@ def detect_pressure_alerts(matches: list[dict]) -> list[dict]:
         elif away_votes >= MIN_METRICS_REQUIRED and away_votes > home_votes:
             dominant_is_home = False
         else:
-            continue  # недостаточно согласованных метрик — пропускаем, это шум
+            continue
 
         score, agreeing_metrics = _composite_score(gaps, dominant_is_home)
         if score < MIN_COMPOSITE_SCORE:
             continue
 
         dominant_team = match["home_team"] if dominant_is_home else match["away_team"]
+
+        home_pressure_total = match.get("home_pressure_total", 0.0)
+        away_pressure_total = match.get("away_pressure_total", 0.0)
+        pressure_total_gap = _share_gap_pct(home_pressure_total, away_pressure_total)
+        pressure_recent_gap = gaps["pressure"]
+        is_escalating = False
+        if pressure_recent_gap is not None:
+            recent_signed = pressure_recent_gap if dominant_is_home else -pressure_recent_gap
+            total_signed = (pressure_total_gap if dominant_is_home else -pressure_total_gap) \
+                if pressure_total_gap is not None else 0.0
+            is_escalating = (recent_signed - total_signed) >= PRESSURE_ESCALATION_THRESHOLD
 
         metric_labels = {
             "xg": f"xG {home_xg:.2f}-{away_xg:.2f}",
@@ -165,12 +169,17 @@ def detect_pressure_alerts(matches: list[dict]) -> list[dict]:
             if line:
                 extra_lines.append(line)
 
-        home_pressure_total = match.get("home_pressure_total", 0.0)
-        away_pressure_total = match.get("away_pressure_total", 0.0)
+        home_score = match.get("home_score", 0)
+        away_score = match.get("away_score", 0)
+
+        header = f"📊 xG Статистика | {match['home_team']} — {match['away_team']} ({minute}', {home_score}:{away_score})"
+        dominance_line = f"Доминирует: {dominant_team} | Сила сигнала: {score:.0f}%"
+        if is_escalating:
+            dominance_line += " | 🔥 Давление нарастает"
 
         message_parts = [
-            f"📊 xG Статистика | {match['home_team']} — {match['away_team']} ({minute}')",
-            f"Доминирует: {dominant_team} | Сила сигнала: {score:.0f}%",
+            header,
+            dominance_line,
             " | ".join(reason_parts),
         ]
         if home_pressure_total or away_pressure_total:
