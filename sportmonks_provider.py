@@ -130,11 +130,6 @@ class SportmonksProvider:
         if not minute:
             minute = self._max_minute(pressure_entries) or self._max_minute(xg_entries)
 
-        # pressure — таймсерия по минутам: {"participant_id", "minute", "pressure"}.
-        # Кумулятивная сумма за весь матч копит шум с ранних минут и слабо отражает
-        # "что происходит прямо сейчас" — поэтому основной сигнал считаем в скользящем
-        # окне последних PRESSURE_RECENT_WINDOW_MINUTES минут, а полную сумму держим
-        # отдельно как справочную (для сообщения/отладки).
         recent_pressure_entries = self._filter_by_minute_window(
             pressure_entries, max(0, minute - PRESSURE_RECENT_WINDOW_MINUTES)
         )
@@ -144,7 +139,6 @@ class SportmonksProvider:
         home_pressure_total, away_pressure_total = self._sum_team_metric(
             pressure_entries, home_id, away_id, value_keys=("pressure", "value")
         )
-        # xG — стандартная накопительная метрика, суммируем за весь матч как обычно.
         home_xg, away_xg = self._sum_team_metric(
             xg_entries, home_id, away_id, value_keys=("expected_goals", "xg", "value")
         )
@@ -157,11 +151,16 @@ class SportmonksProvider:
         home_corners, away_corners = self._extract_stat_by_name(stats, home_id, away_id, ("corners",))
         home_possession, away_possession = self._extract_stat_by_name(stats, home_id, away_id, ("possession", "ball possession"))
 
+        score_entries = fixture.get("scores", []) or []
+        home_score, away_score = self._extract_current_score(score_entries, home_id, away_id)
+
         return {
             "fixture_id": fixture_id,
             "home_team": home_name,
             "away_team": away_name,
             "minute": minute or 0,
+            "home_score": home_score,
+            "away_score": away_score,
             "home_xg": home_xg,
             "away_xg": away_xg,
             "home_pressure": home_pressure,
@@ -179,6 +178,42 @@ class SportmonksProvider:
             "fetched_at": datetime.now(timezone.utc).isoformat(),
             "raw": fixture,
         }
+
+    @staticmethod
+    def _extract_current_score(entries: list, home_id, away_id) -> tuple[int, int]:
+        """
+        Достаёт текущий счёт матча из fixture['scores'].
+        Предпочитаем запись с description == "CURRENT", фолбэк — максимум
+        goals среди всех записей команды.
+        """
+        home_goals, away_goals = 0, 0
+        home_current, away_current = None, None
+        for entry in entries:
+            participant_id = entry.get("participant_id")
+            if participant_id not in (home_id, away_id):
+                continue
+            score_block = entry.get("score") or {}
+            goals = score_block.get("goals")
+            if goals is None:
+                continue
+            try:
+                goals = int(goals)
+            except (TypeError, ValueError):
+                continue
+
+            description = (entry.get("description") or "").upper()
+            if participant_id == home_id:
+                home_goals = max(home_goals, goals)
+                if description == "CURRENT":
+                    home_current = goals
+            elif participant_id == away_id:
+                away_goals = max(away_goals, goals)
+                if description == "CURRENT":
+                    away_current = goals
+
+        home_result = home_current if home_current is not None else home_goals
+        away_result = away_current if away_current is not None else away_goals
+        return home_result, away_result
 
     @staticmethod
     def _max_minute(entries: list) -> int:
@@ -211,9 +246,7 @@ class SportmonksProvider:
     @staticmethod
     def _sum_team_metric(entries: list, home_id, away_id, value_keys: tuple[str, ...]) -> tuple[float, float]:
         """
-        Суммирует значение метрики по home/away за все записи таймсерии
-        (pressure и xgfixture у Sportmonks — это ряд записей по минутам,
-        а не одно агрегированное число на команду).
+        Суммирует значение метрики по home/away за все записи таймсерии.
         """
         home_val, away_val = 0.0, 0.0
         for entry in entries:
