@@ -59,7 +59,7 @@ class SportmonksProvider:
     def get_live_pressure_data(self) -> list[dict]:
         """
         Возвращает список live-матчей с нормализованными данными:
-        [{fixture_id, home_team, away_team, minute,
+        [{fixture_id, home_team, away_team, minute, league_name,
           home_xg, away_xg, home_pressure, away_pressure, fetched_at, raw}, ...]
 
         Пустой список — если live-матчей нет или запрос не удался
@@ -67,7 +67,7 @@ class SportmonksProvider:
         """
         data = self._request(
             "/livescores",
-            params={"include": "participants;scores;xgfixture;pressure;statistics.type"},
+            params={"include": "participants;scores;xgfixture;pressure;statistics.type;league"},
         )
         if not data or "data" not in data:
             return []
@@ -122,6 +122,13 @@ class SportmonksProvider:
                 away_name = p.get("name", "Away")
                 away_id = p.get("id")
 
+        # Название лиги — приходит вместе с fixture, когда "league" запрошен
+        # в include (см. get_live_pressure_data). Используется дальше в
+        # notifier.py / pressure_detector.py для определения страны+флага
+        # по тому же словарю-маппингу, что и SHARP/MOMENTUM алерты.
+        league_block = fixture.get("league") or {}
+        league_name = league_block.get("name")
+
         pressure_entries = fixture.get("pressure", []) or []
         xg_entries = fixture.get("xgfixture", []) or []
 
@@ -158,6 +165,7 @@ class SportmonksProvider:
             "fixture_id": fixture_id,
             "home_team": home_name,
             "away_team": away_name,
+            "league_name": league_name,
             "minute": minute or 0,
             "home_score": home_score,
             "away_score": away_score,
