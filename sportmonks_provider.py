@@ -5,10 +5,14 @@ Sportmonks Provider — live xG и Pressure Index по матчам.
 asyncio, вписывается в существующий цикл run_cycle() / time.sleep().
 Полностью изолирован от OddsCorp/Odds-API: если Sportmonks недоступен —
 это не мешает основному циклу коэффициентов.
+
+# DEBUG: временный dump сырого fixture в лог для диагностики парсинга
+# минуты/xG/pressure. Убрать после диагностики (см. флаг ниже).
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timezone
 
@@ -17,6 +21,11 @@ import requests
 logger = logging.getLogger("sportmonks_provider")
 
 BASE_URL = "https://api.sportmonks.com/v3/football"
+
+# DEBUG: временный флаг — как только структуру увидели и починили парсинг,
+# выставить в False (или вырезать блок целиком).
+_DEBUG_DUMP_RAW_FIXTURE = True
+_debug_dumped_once = False
 
 
 class SportmonksProvider:
@@ -63,6 +72,28 @@ class SportmonksProvider:
         )
         if not data or "data" not in data:
             return []
+
+        # DEBUG: логируем ответ верхнего уровня один раз за процесс —
+        # интересует, есть ли ключ "message"/"warnings" про невалидные include
+        global _debug_dumped_once
+        if _DEBUG_DUMP_RAW_FIXTURE and not _debug_dumped_once:
+            top_level_keys = list(data.keys())
+            logger.info(f"[SPORTMONKS DEBUG] top-level keys ответа: {top_level_keys}")
+            if "message" in data:
+                logger.info(f"[SPORTMONKS DEBUG] message: {data.get('message')}")
+            if "warnings" in data:
+                logger.info(f"[SPORTMONKS DEBUG] warnings: {data.get('warnings')}")
+
+            if data["data"]:
+                raw_fixture = data["data"][0]
+                dump = json.dumps(raw_fixture, ensure_ascii=False)
+                # режем на куски по 1500 символов, чтобы не обрезало логами Railway
+                chunk_size = 1500
+                chunks = [dump[i:i + chunk_size] for i in range(0, len(dump), chunk_size)]
+                logger.info(f"[SPORTMONKS DEBUG] raw fixture, {len(chunks)} частей, длина {len(dump)}:")
+                for idx, chunk in enumerate(chunks):
+                    logger.info(f"[SPORTMONKS DEBUG] part {idx+1}/{len(chunks)}: {chunk}")
+                _debug_dumped_once = True
 
         results = []
         for fixture in data["data"]:
