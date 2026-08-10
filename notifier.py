@@ -143,7 +143,8 @@ def format_alert(alert: Alert, sharp_confirmation: dict | None = None) -> str:
     else:
         kickoff_line = f"🕐 Начало: {_format_kickoff(q.commence_time)}\n"
 
-    header = f"{alert.bbk_tier} <b>BBK SCORE: {alert.bbk_score:.0f}/100</b>"
+    momentum_siren = "🚨 " if getattr(alert, "signal_type", "") == "MOMENTUM" else ""
+    header = f"{momentum_siren}{alert.bbk_tier} <b>BBK SCORE: {alert.bbk_score:.0f}/100</b>"
 
     market_line = f"{_esc(q.market_key)} | <b>{_esc(q.outcome_name)}</b>{point}"
 
