@@ -13,6 +13,61 @@ from notifier import TelegramNotifier, format_alert
 from providers import MockProvider, OddscorpProvider, ProviderError, TheOddsApiProvider, list_sports
 from sportmonks_provider import SportmonksProvider
 from pressure_detector import detect_pressure_alerts
+import oddspapi_provider
+
+
+def _predicted_side_for_sharp_check(alert: Alert) -> str | None:
+    """Определяет 'home'/'draw'/'away' для сверки с Pinnacle через OddsPapi.
+    Работает ТОЛЬКО для рынка h2h (исход матча) — для тоталов/фор/прочих
+    рынков возвращает None, проверка по Pinnacle для них не делается,
+    т.к. сравнение home/draw/away там не имеет смысла.
+    """
+    q = alert.quote
+    market = (q.market_key or "").lower()
+    if market not in ("h2h", "moneyline", "1x2", "match_winner"):
+        return None
+    outcome = (q.outcome_name or "").strip().lower()
+    if outcome in ("draw", "tie", "x", "ничья"):
+        return "draw"
+    if outcome == (q.home_team or "").strip().lower():
+        return "home"
+    if outcome == (q.away_team or "").strip().lower():
+        return "away"
+    return None
+
+
+def _try_sharp_confirmation(alert: Alert, db_path: str) -> dict | None:
+    """Пытается получить sharp-подтверждение от OddsPapi/Pinnacle для топовых
+    сигналов. Дневной бюджет запросов регулируется внутри oddspapi_provider
+    (ODDSPAPI_DAILY_BUDGET) — как только он исчерпан, функция просто вернёт
+    None для всех последующих алертов текущего дня.
+
+    Любая ошибка -> None, алерт всё равно уходит как обычно, просто без
+    пометки. Результат логируется отдельной строкой с тегом [SHARP-CHECK]
+    для последующего анализа за тестовый период (грепается в Railway логах).
+    """
+    predicted_side = _predicted_side_for_sharp_check(alert)
+    if predicted_side is None:
+        return None
+
+    q = alert.quote
+    try:
+        fixture_id = oddspapi_provider.find_fixture_id(q.home_team, q.away_team)
+        if not fixture_id:
+            _log(f"[SHARP-CHECK] fixture не найден: {q.home_team} — {q.away_team}")
+            return None
+        result = oddspapi_provider.check_sharp_confirmation(fixture_id, predicted_side, db_path)
+    except Exception as exc:
+        _log(f"[SHARP-CHECK] ошибка проверки {q.home_team} — {q.away_team}: {exc}")
+        return None
+
+    if result is not None:
+        _log(
+            f"[SHARP-CHECK] score={alert.bbk_score:.0f} {q.home_team} — {q.away_team} "
+            f"| наш прогноз={predicted_side} | pinnacle_favorite={result.get('sharp_favorite')} "
+            f"| confirmed={result.get('confirmed')}"
+        )
+    return result
 
 
 def _filter_by_horizon(quotes: list, hours_ahead_limit: float) -> list:
@@ -31,17 +86,6 @@ def _filter_by_horizon(quotes: list, hours_ahead_limit: float) -> list:
 
 
 def _filter_by_league(quotes: list, whitelist: tuple[str, ...], blacklist: tuple[str, ...]) -> list:
-    """Фильтр по названию лиги (регистронезависимый поиск подстроки).
-
-    - blacklist: если название лиги СОДЕРЖИТ любую из подстрок — событие выкидывается
-      (например "esoccer", "replays" — мусорные/не настоящие матчи).
-    - whitelist: если список не пуст — оставляем ТОЛЬКО события, где лига содержит
-      хотя бы одну из подстрок (например "premier league", "brasileirao").
-      Если whitelist пуст — этот фильтр не применяется вообще.
-
-    Если у котировки нет league_name (пусто) — она проходит blacklist, но НЕ проходит
-    непустой whitelist (нет данных = не можем подтвердить, что лига разрешена).
-    """
     kept = []
     for quote in quotes:
         league_lower = (quote.league_name or "").lower()
@@ -58,16 +102,6 @@ def _filter_by_league(quotes: list, whitelist: tuple[str, ...], blacklist: tuple
 
 
 def _filter_by_sport(quotes: list, whitelist: tuple[str, ...]) -> list:
-    """Фильтр по виду спорта (регистронезависимый поиск подстроки в quote.sport_key).
-
-    Отдельно от _filter_by_league, потому что "кибер"/"виртуалка" не всегда
-    палится по названию лиги — у OddsCorp это часто отдельное значение поля
-    sport ("virtual_football", "esports" и т.п.), которое приходит в sport_key.
-
-    Если whitelist пуст — фильтр не применяется (пропускаем всё, как раньше).
-    Если у котировки sport_key пустой — она НЕ проходит непустой whitelist
-    (нет данных = не можем подтвердить, что спорт разрешён).
-    """
     if not whitelist:
         return quotes
     kept = []
@@ -142,11 +176,6 @@ def run_pressure_cycle(
     notifier: TelegramNotifier,
     cooldown_minutes: int,
 ) -> None:
-    """
-    Отдельный, полностью изолированный цикл: xG / Pressure Index от Sportmonks.
-    Ничего общего с analyzer.py и MOMENTUM/SHARP — если тут что-то упадёт,
-    это никак не затронет основной цикл run_cycle().
-    """
     if sportmonks_provider is None:
         return
 
@@ -195,6 +224,7 @@ def run_cycle(
     sport_whitelist: tuple[str, ...] = (),
     max_alerts_per_hour: int = 20,
     sent_timestamps: list[datetime] | None = None,
+    db_path: str = "",
 ) -> list[datetime]:
     if sent_timestamps is None:
         sent_timestamps = []
@@ -211,10 +241,6 @@ def run_cycle(
     skipped_by_score = len(all_alerts) - len(scored_alerts)
     skipped_by_dedup = len(scored_alerts) - len(alerts)
 
-    # Скользящее окно на час: даже если валид-сигналов пришло много, отправляем
-    # только топ по score, пока не упрёмся в MAX_ALERTS_PER_HOUR. То, что не
-    # поместилось, НЕ помечается как отправленное — получит шанс пройти в
-    # следующем цикле, если освободится место в окне.
     now_dt = datetime.now(timezone.utc)
     sent_timestamps = _prune_old_timestamps(sent_timestamps, now_dt)
     remaining_capacity = max(0, max_alerts_per_hour - len(sent_timestamps))
@@ -242,7 +268,8 @@ def run_cycle(
     )
 
     for alert in alerts_to_send:
-        message = format_alert(alert)
+        sharp_confirmation = _try_sharp_confirmation(alert, db_path)
+        message = format_alert(alert, sharp_confirmation)
         print("\n" + message + "\n")
         notifier.send(message)
         sent_timestamps.append(now_dt)
@@ -324,6 +351,7 @@ def main() -> int:
                 settings.sport_whitelist,
                 settings.max_alerts_per_hour,
                 sent_timestamps,
+                settings.database_path,
             )
             run_pressure_cycle(sportmonks_provider, db, notifier, settings.cooldown_minutes)
             return 0
@@ -340,6 +368,7 @@ def main() -> int:
                     settings.sport_whitelist,
                     settings.max_alerts_per_hour,
                     sent_timestamps,
+                    settings.database_path,
                 )
                 run_pressure_cycle(sportmonks_provider, db, notifier, settings.cooldown_minutes)
             except (ProviderError, RuntimeError, ValueError) as exc:
