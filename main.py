@@ -52,11 +52,9 @@ def _try_sharp_confirmation(alert: Alert, db_path: str) -> dict | None:
 
     q = alert.quote
     try:
-        fixture_id = oddspapi_provider.find_fixture_id(q.home_team, q.away_team)
-        if not fixture_id:
-            _log(f"[SHARP-CHECK] fixture не найден: {q.home_team} — {q.away_team}")
-            return None
-        result = oddspapi_provider.check_sharp_confirmation(fixture_id, predicted_side, db_path)
+        result = oddspapi_provider.check_sharp_confirmation(
+            q.league_name, q.commence_time, predicted_side, db_path
+        )
     except Exception as exc:
         _log(f"[SHARP-CHECK] ошибка проверки {q.home_team} — {q.away_team}: {exc}")
         return None
