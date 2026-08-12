@@ -110,6 +110,29 @@ def _filter_by_sport(quotes: list, whitelist: tuple[str, ...]) -> list:
     return kept
 
 
+def _filter_out_russia(matches: list) -> list:
+    """Убирает матчи из России (по стране и по названию лиги) из данных
+    Sportmonks перед тем, как они попадут в PRESSURE детектор.
+    SHARP/MOMENTUM уже фильтруются через LEAGUE_BLACKLIST на уровне quotes,
+    но PRESSURE работает с сырыми матчами Sportmonks и такого фильтра не имел.
+    """
+    blocked_countries = {"russia", "россия"}
+    filtered = []
+    for m in matches:
+        country = str(
+            m.get("country") or m.get("country_name") or m.get("league_country") or ""
+        ).strip().lower()
+        league = str(m.get("league_name") or m.get("league") or "").strip().lower()
+
+        if country in blocked_countries:
+            continue
+        if "russia" in league or "russian" in league:
+            continue
+
+        filtered.append(m)
+    return filtered
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="BBK Scanner MVP")
     parser.add_argument(
@@ -182,6 +205,8 @@ def run_pressure_cycle(
     except Exception as exc:
         _log(f"[PRESSURE] Ошибка получения данных Sportmonks: {exc}")
         return
+
+    matches = _filter_out_russia(matches)
 
     if not matches:
         _log("[PRESSURE] Live-матчей от Sportmonks не найдено в этом цикле.")
