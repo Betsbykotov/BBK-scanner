@@ -110,11 +110,16 @@ def _filter_by_sport(quotes: list, whitelist: tuple[str, ...]) -> list:
     return kept
 
 
-def _filter_out_russia(matches: list) -> list:
-    """Убирает матчи из России (по стране и по названию лиги) из данных
-    Sportmonks перед тем, как они попадут в PRESSURE детектор.
-    SHARP/MOMENTUM уже фильтруются через LEAGUE_BLACKLIST на уровне quotes,
-    но PRESSURE работает с сырыми матчами Sportmonks и такого фильтра не имел.
+def _filter_pressure_matches(matches: list, league_blacklist: tuple[str, ...] = ()) -> list:
+    """Убирает нежелательные матчи (Россия, эсокер/виртуальный футбол и всё,
+    что уже сидит в LEAGUE_BLACKLIST) из данных Sportmonks перед тем, как они
+    попадут в PRESSURE детектор.
+
+    SHARP/MOMENTUM фильтруются через LEAGUE_BLACKLIST на уровне quotes
+    (_filter_by_league), но PRESSURE работает с сырыми матчами Sportmonks
+    и раньше такого фильтра не имел вообще — отсюда были проскоки и по
+    России, и по эсокеру (Esoccer Battle и т.п.), который уже давно сидит
+    в LEAGUE_BLACKLIST для остальных детекторов.
     """
     blocked_countries = {"russia", "россия"}
     filtered = []
@@ -127,6 +132,8 @@ def _filter_out_russia(matches: list) -> list:
         if country in blocked_countries:
             continue
         if "russia" in league or "russian" in league:
+            continue
+        if league_blacklist and any(bad in league for bad in league_blacklist):
             continue
 
         filtered.append(m)
@@ -196,6 +203,7 @@ def run_pressure_cycle(
     db: OddsDatabase,
     notifier: TelegramNotifier,
     cooldown_minutes: int,
+    league_blacklist: tuple[str, ...] = (),
 ) -> None:
     if sportmonks_provider is None:
         return
@@ -206,7 +214,7 @@ def run_pressure_cycle(
         _log(f"[PRESSURE] Ошибка получения данных Sportmonks: {exc}")
         return
 
-    matches = _filter_out_russia(matches)
+    matches = _filter_pressure_matches(matches, league_blacklist)
 
     if not matches:
         _log("[PRESSURE] Live-матчей от Sportmonks не найдено в этом цикле.")
@@ -376,7 +384,7 @@ def main() -> int:
                 sent_timestamps,
                 settings.database_path,
             )
-            run_pressure_cycle(sportmonks_provider, db, notifier, settings.cooldown_minutes)
+            run_pressure_cycle(sportmonks_provider, db, notifier, settings.cooldown_minutes, settings.league_blacklist)
             return 0
 
         interval_minutes = args.interval_minutes or settings.poll_interval_minutes
@@ -393,7 +401,7 @@ def main() -> int:
                     sent_timestamps,
                     settings.database_path,
                 )
-                run_pressure_cycle(sportmonks_provider, db, notifier, settings.cooldown_minutes)
+                run_pressure_cycle(sportmonks_provider, db, notifier, settings.cooldown_minutes, settings.league_blacklist)
             except (ProviderError, RuntimeError, ValueError) as exc:
                 _log(f"Ошибка в цикле сканирования: {exc}")
             except KeyboardInterrupt:
