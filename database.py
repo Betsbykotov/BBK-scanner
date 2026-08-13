@@ -35,20 +35,28 @@ CREATE TABLE IF NOT EXISTS pressure_snapshots (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     fixture_id TEXT NOT NULL,
     league_name TEXT,
-    country TEXT,
+    country_name TEXT,
+    country_iso2 TEXT,
     home_team TEXT NOT NULL,
     away_team TEXT NOT NULL,
     minute INTEGER,
-    xg_home REAL,
-    xg_away REAL,
-    pressure_index_home REAL,
-    pressure_index_away REAL,
-    shots_home INTEGER,
-    shots_away INTEGER,
-    corners_home INTEGER,
-    corners_away INTEGER,
-    possession_home REAL,
-    possession_away REAL,
+    home_score INTEGER,
+    away_score INTEGER,
+    home_xg REAL,
+    away_xg REAL,
+    home_pressure REAL,
+    away_pressure REAL,
+    home_pressure_total REAL,
+    away_pressure_total REAL,
+    home_shots REAL,
+    away_shots REAL,
+    home_shots_on_target REAL,
+    away_shots_on_target REAL,
+    home_corners REAL,
+    away_corners REAL,
+    home_possession REAL,
+    away_possession REAL,
+    alert_score REAL,
     captured_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_pressure_lookup
@@ -149,45 +157,54 @@ class OddsDatabase:
                 (dedup_key, sent_at),
             )
 
-    def insert_pressure_snapshot(self, match: dict, captured_at: str) -> None:
-        """Сохраняет один снимок давления/xG по матчу. match — сырой dict
-        из sportmonks_provider.get_live_pressure_data(). Поля читаются через
-        .get() с дефолтом None, чтобы отсутствие какого-то одного показателя
-        не ломало запись остальных.
+    def insert_pressure_snapshot(self, match: dict, captured_at: str, alert_score: float | None = None) -> None:
+        """Сохраняет один снимок давления/xG по матчу. match — dict из
+        sportmonks_provider.SportmonksProvider.get_live_pressure_data()
+        (см. _normalize_fixture), поля соответствуют реальным ключам,
+        которые также читает pressure_detector.detect_pressure_alerts().
 
-        ВАЖНО: имена полей (xg_home, pressure_index_home, и т.д.) — это
-        предположение по смыслу. Нужно свериться с реальными ключами, которые
-        отдаёт sportmonks_provider.get_live_pressure_data() и которые читает
-        pressure_detector.detect_pressure_alerts() — если там другие названия,
-        поправим на реальные перед первым запуском.
+        alert_score передаётся только когда на этом снимке сработал алерт
+        (score из detect_pressure_alerts) — для остальных снимков None,
+        что позволяет на графике карточки отметить точку, где был алерт.
         """
         with self.connect() as conn:
             conn.execute(
                 """
                 INSERT INTO pressure_snapshots (
-                    fixture_id, league_name, country, home_team, away_team, minute,
-                    xg_home, xg_away, pressure_index_home, pressure_index_away,
-                    shots_home, shots_away, corners_home, corners_away,
-                    possession_home, possession_away, captured_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    fixture_id, league_name, country_name, country_iso2,
+                    home_team, away_team, minute, home_score, away_score,
+                    home_xg, away_xg, home_pressure, away_pressure,
+                    home_pressure_total, away_pressure_total,
+                    home_shots, away_shots, home_shots_on_target, away_shots_on_target,
+                    home_corners, away_corners, home_possession, away_possession,
+                    alert_score, captured_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    str(match.get("fixture_id") or match.get("id") or ""),
-                    match.get("league_name") or match.get("league"),
-                    match.get("country") or match.get("country_name") or match.get("league_country"),
+                    str(match.get("fixture_id") or ""),
+                    match.get("league_name"),
+                    match.get("country_name"),
+                    match.get("country_iso2"),
                     match.get("home_team", ""),
                     match.get("away_team", ""),
                     match.get("minute"),
-                    match.get("xg_home"),
-                    match.get("xg_away"),
-                    match.get("pressure_index_home"),
-                    match.get("pressure_index_away"),
-                    match.get("shots_home"),
-                    match.get("shots_away"),
-                    match.get("corners_home"),
-                    match.get("corners_away"),
-                    match.get("possession_home"),
-                    match.get("possession_away"),
+                    match.get("home_score"),
+                    match.get("away_score"),
+                    match.get("home_xg"),
+                    match.get("away_xg"),
+                    match.get("home_pressure"),
+                    match.get("away_pressure"),
+                    match.get("home_pressure_total"),
+                    match.get("away_pressure_total"),
+                    match.get("home_shots"),
+                    match.get("away_shots"),
+                    match.get("home_shots_on_target"),
+                    match.get("away_shots_on_target"),
+                    match.get("home_corners"),
+                    match.get("away_corners"),
+                    match.get("home_possession"),
+                    match.get("away_possession"),
+                    alert_score,
                     captured_at,
                 ),
             )
@@ -207,6 +224,6 @@ class OddsDatabase:
                 WHERE fixture_id = ? AND captured_at >= ?
                 ORDER BY captured_at ASC
                 """,
-                (fixture_id, cutoff),
+                (str(fixture_id), cutoff),
             ).fetchall()
         return [dict(row) for row in rows]

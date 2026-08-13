@@ -167,7 +167,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--no-pressure",
         action="store_true",
-        help="Отключить сигналы xG/Pressure Index от Sportmonks, даже если ключ задан",
+        help="Отключить сигналы xG/Pressure от Sportmonks, даже если ключ задан",
     )
     return parser
 
@@ -221,6 +221,28 @@ def run_pressure_cycle(
         return
 
     pressure_alerts = detect_pressure_alerts(matches)
+
+    # Score по fixture_id для тех матчей, где сработал алерт в этом цикле —
+    # нужен, чтобы пометить точку на графике карточки, где был алерт.
+    alert_score_by_fixture: dict[str, float] = {}
+    for a in pressure_alerts:
+        fixture_id = a["dedup_key"].split(":")[1] if ":" in a["dedup_key"] else None
+        if fixture_id:
+            alert_score_by_fixture[fixture_id] = a["score"]
+
+    # Сохраняем снимок КАЖДОГО матча в этом цикле — не только тех, где
+    # сработал алерт. Без непрерывной истории график "давление нарастает"
+    # в карточке будет не из чего строить: нужна линия ДО момента алерта,
+    # а не только точка в момент срабатывания.
+    now_iso = datetime.now(timezone.utc).isoformat()
+    for m in matches:
+        fixture_id_str = str(m.get("fixture_id") or "")
+        score = alert_score_by_fixture.get(fixture_id_str)
+        try:
+            db.insert_pressure_snapshot(m, now_iso, alert_score=score)
+        except Exception as exc:
+            _log(f"[PRESSURE] Ошибка записи снимка fixture={fixture_id_str}: {exc}")
+
     if not pressure_alerts:
         minutes_seen = sorted(m.get("minute", 0) for m in matches)
         _log(
@@ -229,7 +251,6 @@ def run_pressure_cycle(
         )
         return
 
-    now_iso = datetime.now(timezone.utc).isoformat()
     sent = 0
     for alert in pressure_alerts:
         if db.was_recently_sent(alert["dedup_key"], cooldown_minutes, now_iso):
