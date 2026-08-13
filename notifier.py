@@ -6,6 +6,8 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone, timedelta
 
+import requests
+
 from models import Alert
 
 
@@ -192,3 +194,24 @@ class TelegramNotifier:
             raise RuntimeError(f"Ошибка отправки Telegram: {exc}") from exc
         if not result.get("ok"):
             raise RuntimeError(f"Telegram отклонил сообщение: {result}")
+
+    def send_photo(self, photo_bytes: bytes, caption: str = "") -> None:
+        """Отправляет PNG-картинку (карточку матча) с подписью.
+
+        Telegram ограничивает caption ~1024 символами — если сообщение
+        format_alert длиннее, Telegram сам обрежет его при отправке, так что
+        для длинных алертов есть смысл сначала слать send_photo с короткой
+        подписью, а следом send() с полным текстом. Решаем на месте вызова.
+        """
+        if not self.enabled:
+            return
+        url = f"https://api.telegram.org/bot{self.bot_token}/sendPhoto"
+        files = {"photo": ("card.png", photo_bytes, "image/png")}
+        data = {"chat_id": self.chat_id, "caption": caption, "parse_mode": "HTML"}
+        try:
+            response = requests.post(url, data=data, files=files, timeout=30)
+            result = response.json()
+        except Exception as exc:
+            raise RuntimeError(f"Ошибка отправки фото в Telegram: {exc}") from exc
+        if not result.get("ok"):
+            raise RuntimeError(f"Telegram отклонил фото: {result}")

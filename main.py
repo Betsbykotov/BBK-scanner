@@ -13,7 +13,13 @@ from notifier import TelegramNotifier, format_alert
 from providers import MockProvider, OddscorpProvider, ProviderError, TheOddsApiProvider, list_sports
 from sportmonks_provider import SportmonksProvider
 from pressure_detector import detect_pressure_alerts
+from pressure_card import generate_pressure_card
 import oddspapi_provider
+
+# Карточка генерируется только для самых сильных PRESSURE-алертов —
+# остальные уходят как обычно, текстом. Регулируется тут, пока нет
+# отдельной переменной окружения в config.py.
+REPORT_CARD_MIN_SCORE = 85.0
 
 
 def _predicted_side_for_sharp_check(alert: Alert) -> str | None:
@@ -252,11 +258,33 @@ def run_pressure_cycle(
         return
 
     sent = 0
+    matches_by_fixture = {str(m.get("fixture_id") or ""): m for m in matches}
     for alert in pressure_alerts:
         if db.was_recently_sent(alert["dedup_key"], cooldown_minutes, now_iso):
             continue
-        print("\n" + alert["message"] + "\n")
-        notifier.send(alert["message"])
+
+        fixture_id_str = alert["dedup_key"].split(":")[1] if ":" in alert["dedup_key"] else ""
+        is_escalating = "🔥" in alert["message"]
+
+        card_sent = False
+        if alert["score"] >= REPORT_CARD_MIN_SCORE and fixture_id_str:
+            match_for_card = matches_by_fixture.get(fixture_id_str)
+            if match_for_card is not None:
+                try:
+                    history = db.get_pressure_history(fixture_id_str, window_minutes=20)
+                    card_bytes = generate_pressure_card(
+                        match_for_card, history, alert["score"], is_escalating
+                    )
+                    caption = alert["message"][:1024]
+                    notifier.send_photo(card_bytes, caption)
+                    card_sent = True
+                except Exception as exc:
+                    _log(f"[PRESSURE] Ошибка генерации/отправки карточки fixture={fixture_id_str}: {exc}")
+
+        if not card_sent:
+            print("\n" + alert["message"] + "\n")
+            notifier.send(alert["message"])
+
         db.mark_sent(alert["dedup_key"], now_iso)
         sent += 1
 
