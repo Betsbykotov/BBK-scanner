@@ -30,6 +30,29 @@ CREATE TABLE IF NOT EXISTS sent_alerts (
     dedup_key TEXT PRIMARY KEY,
     sent_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS pressure_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    fixture_id TEXT NOT NULL,
+    league_name TEXT,
+    country TEXT,
+    home_team TEXT NOT NULL,
+    away_team TEXT NOT NULL,
+    minute INTEGER,
+    xg_home REAL,
+    xg_away REAL,
+    pressure_index_home REAL,
+    pressure_index_away REAL,
+    shots_home INTEGER,
+    shots_away INTEGER,
+    corners_home INTEGER,
+    corners_away INTEGER,
+    possession_home REAL,
+    possession_away REAL,
+    captured_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_pressure_lookup
+ON pressure_snapshots(fixture_id, captured_at);
 """
 
 
@@ -75,16 +98,6 @@ class OddsDatabase:
     ) -> tuple[float, str] | None:
         """Возвращает (цена, captured_at) последнего снимка ДО now_iso,
         но не старше lookback_start_iso (окно поиска в прошлое).
-
-        ВАЖНО: раньше сюда передавался только один параметр — начало окна
-        (lookback_start), который в SQL использовался как ВЕРХНЯЯ граница
-        (captured_at <= before_iso). Это был баг: запрос искал снимок СТАРШЕ
-        начала окна поиска, а не "последний снимок В пределах окна". Пока
-        сканер не проработал непрерывно дольше lookback_minutes, такая строка
-        физически не могла существовать — отсюда movement/velocity всегда None.
-
-        Теперь два явных параметра: верхняя граница (текущий момент) и нижняя
-        (начало окна) — берём самый свежий снимок строго внутри этого окна.
         """
         point_condition = "point IS NULL" if quote.point is None else "point = ?"
         params: list[object] = [
@@ -115,10 +128,6 @@ class OddsDatabase:
 
     def was_recently_sent(self, dedup_key: str, cooldown_minutes: int, now_iso: str) -> bool:
         """Проверяет, отправлялся ли уже алерт с этим ключом внутри окна cooldown.
-
-        Ключ = конкретная линия у конкретного букмекера (event+market+outcome+
-        bookmaker). Так одно и то же движение не спамит каждый цикл сканирования,
-        но если линия продолжает жить дальше cooldown — алерт снова разрешён.
         """
         cutoff = (
             datetime.fromisoformat(now_iso) - timedelta(minutes=cooldown_minutes)
@@ -139,3 +148,65 @@ class OddsDatabase:
                 """,
                 (dedup_key, sent_at),
             )
+
+    def insert_pressure_snapshot(self, match: dict, captured_at: str) -> None:
+        """Сохраняет один снимок давления/xG по матчу. match — сырой dict
+        из sportmonks_provider.get_live_pressure_data(). Поля читаются через
+        .get() с дефолтом None, чтобы отсутствие какого-то одного показателя
+        не ломало запись остальных.
+
+        ВАЖНО: имена полей (xg_home, pressure_index_home, и т.д.) — это
+        предположение по смыслу. Нужно свериться с реальными ключами, которые
+        отдаёт sportmonks_provider.get_live_pressure_data() и которые читает
+        pressure_detector.detect_pressure_alerts() — если там другие названия,
+        поправим на реальные перед первым запуском.
+        """
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO pressure_snapshots (
+                    fixture_id, league_name, country, home_team, away_team, minute,
+                    xg_home, xg_away, pressure_index_home, pressure_index_away,
+                    shots_home, shots_away, corners_home, corners_away,
+                    possession_home, possession_away, captured_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(match.get("fixture_id") or match.get("id") or ""),
+                    match.get("league_name") or match.get("league"),
+                    match.get("country") or match.get("country_name") or match.get("league_country"),
+                    match.get("home_team", ""),
+                    match.get("away_team", ""),
+                    match.get("minute"),
+                    match.get("xg_home"),
+                    match.get("xg_away"),
+                    match.get("pressure_index_home"),
+                    match.get("pressure_index_away"),
+                    match.get("shots_home"),
+                    match.get("shots_away"),
+                    match.get("corners_home"),
+                    match.get("corners_away"),
+                    match.get("possession_home"),
+                    match.get("possession_away"),
+                    captured_at,
+                ),
+            )
+
+    def get_pressure_history(self, fixture_id: str, window_minutes: int = 20) -> list[dict]:
+        """Возвращает снимки за последние window_minutes для одного матча,
+        отсортированные по времени по возрастанию — то, что рисует линию
+        нарастания давления в карточке.
+        """
+        cutoff = (
+            datetime.utcnow() - timedelta(minutes=window_minutes)
+        ).isoformat()
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM pressure_snapshots
+                WHERE fixture_id = ? AND captured_at >= ?
+                ORDER BY captured_at ASC
+                """,
+                (fixture_id, cutoff),
+            ).fetchall()
+        return [dict(row) for row in rows]
