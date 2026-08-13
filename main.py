@@ -19,7 +19,7 @@ import oddspapi_provider
 # Карточка генерируется только для самых сильных PRESSURE-алертов —
 # остальные уходят как обычно, текстом. Регулируется тут, пока нет
 # отдельной переменной окружения в config.py.
-REPORT_CARD_MIN_SCORE = 85.0
+REPORT_CARD_MIN_SCORE = 50.0
 
 
 def _predicted_side_for_sharp_check(alert: Alert) -> str | None:
