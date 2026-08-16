@@ -15,6 +15,8 @@ from sportmonks_provider import SportmonksProvider
 from pressure_detector import detect_pressure_alerts
 from pressure_card import generate_pressure_card
 import thestatsapi_provider as oddspapi_provider
+from thestatsapi_pressure_provider import ThestatsapiPressureProvider
+from thestatsapi_pressure_detector import detect_pressure_alerts_v3
 
 # Карточка генерируется только для самых сильных PRESSURE-алертов —
 # остальные уходят как обычно, текстом. Регулируется тут, пока нет
@@ -291,6 +293,52 @@ def run_pressure_cycle(
     _log(f"[PRESSURE] Матчей проверено: {len(matches)} | Алертов: {len(pressure_alerts)} | Отправлено: {sent}")
 
 
+def run_pressure_cycle_v3(
+    thestatsapi_pressure_provider: ThestatsapiPressureProvider | None,
+    db: OddsDatabase,
+    notifier: TelegramNotifier,
+    cooldown_minutes: int,
+) -> None:
+    """Параллельная v3.0-ветка PRESSURE на данных TheStatsAPI — отдельный
+    поток алертов с меткой 'v3.0' в тексте, никак не пересекается с v2.0
+    (Sportmonks) по dedup-ключам (pressure_v3: vs pressure:). Задумана как
+    сравнение источников на тестовой неделе, не как замена v2.0."""
+    if thestatsapi_pressure_provider is None:
+        return
+
+    try:
+        matches = thestatsapi_pressure_provider.get_live_pressure_data()
+    except Exception as exc:
+        _log(f"[PRESSURE v3] Ошибка получения данных TheStatsAPI: {exc}")
+        return
+
+    if not matches:
+        _log("[PRESSURE v3] Live-матчей от TheStatsAPI не найдено в этом цикле.")
+        return
+
+    pressure_alerts = detect_pressure_alerts_v3(matches)
+
+    if not pressure_alerts:
+        minutes_seen = sorted(m.get("minute", 0) for m in matches)
+        _log(
+            f"[PRESSURE v3] Матчей от TheStatsAPI: {len(matches)} (минуты: {minutes_seen}) "
+            f"— явного дисбаланса не найдено."
+        )
+        return
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    sent = 0
+    for alert in pressure_alerts:
+        if db.was_recently_sent(alert["dedup_key"], cooldown_minutes, now_iso):
+            continue
+        print("\n" + alert["message"] + "\n")
+        notifier.send(alert["message"])
+        db.mark_sent(alert["dedup_key"], now_iso)
+        sent += 1
+
+    _log(f"[PRESSURE v3] Матчей проверено: {len(matches)} | Алертов: {len(pressure_alerts)} | Отправлено: {sent}")
+
+
 def run_cycle(
     provider,
     db: OddsDatabase,
@@ -420,6 +468,14 @@ def main() -> int:
         elif not sportmonks_key:
             _log("[PRESSURE] SPORTMONKS_API_KEY не задан — сигналы xG/Pressure отключены.")
 
+        thestatsapi_pressure_provider = None
+        thestatsapi_key = getattr(settings, "thestatsapi_key", "") or __import__("os").environ.get("THESTATSAPI_KEY", "")
+        if thestatsapi_key:
+            thestatsapi_pressure_provider = ThestatsapiPressureProvider(api_key=thestatsapi_key)
+            _log("[PRESSURE v3] TheStatsAPI провайдер активирован.")
+        else:
+            _log("[PRESSURE v3] THESTATSAPI_KEY не задан — v3.0 сигналы отключены.")
+
         sent_timestamps: list[datetime] = []
 
         if not args.loop:
@@ -434,6 +490,7 @@ def main() -> int:
                 settings.database_path,
             )
             run_pressure_cycle(sportmonks_provider, db, notifier, settings.cooldown_minutes, settings.league_blacklist)
+            run_pressure_cycle_v3(thestatsapi_pressure_provider, db, notifier, settings.cooldown_minutes)
             return 0
 
         interval_minutes = args.interval_minutes or settings.poll_interval_minutes
@@ -451,6 +508,7 @@ def main() -> int:
                     settings.database_path,
                 )
                 run_pressure_cycle(sportmonks_provider, db, notifier, settings.cooldown_minutes, settings.league_blacklist)
+                run_pressure_cycle_v3(thestatsapi_pressure_provider, db, notifier, settings.cooldown_minutes)
             except (ProviderError, RuntimeError, ValueError) as exc:
                 _log(f"Ошибка в цикле сканирования: {exc}")
             except KeyboardInterrupt:
