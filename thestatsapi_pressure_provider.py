@@ -21,14 +21,13 @@ from datetime import datetime, timezone
 
 import requests
 
+from thestatsapi_rate_limiter import throttle as _shared_throttle
+
 BASE_URL = "https://api.thestatsapi.com/api"
 
 
 class ThestatsapiPressureProvider:
-    # 120 запросов/мин по тарифу Starter — берём с запасом (100/мин), чтобы
-    # не биться каждый цикл о лимит и не терять большую часть матчей на 429.
-    MIN_REQUEST_INTERVAL = 0.6  # секунд между запросами -> ~100 запросов/мин
-    MAX_MATCHES_PER_CYCLE = 25  # защита от переполнения цикла при большом кол-ве live-матчей
+    MAX_MATCHES_PER_CYCLE = 20  # защита от переполнения цикла при большом кол-ве live-матчей
 
     def __init__(self, api_key: str, daily_budget: int = 3000):
         self.api_key = api_key
@@ -36,7 +35,6 @@ class ThestatsapiPressureProvider:
         self._budget_used = 0
         self._budget_date = None
         self._competition_name_cache: dict[str, tuple[str, str]] = {}  # comp_id -> (name, country)
-        self._last_request_at = 0.0
 
     def _headers(self) -> dict:
         return {"Authorization": f"Bearer {self.api_key}"}
@@ -51,27 +49,17 @@ class ThestatsapiPressureProvider:
         self._budget_used += 1
         return True
 
-    def _throttle(self) -> None:
-        """Выдерживает минимальный интервал между запросами, чтобы не
-        упираться в лимит 120 запросов/мин у TheStatsAPI (Starter-план)."""
-        elapsed = time.monotonic() - self._last_request_at
-        wait = self.MIN_REQUEST_INTERVAL - elapsed
-        if wait > 0:
-            time.sleep(wait)
-        self._last_request_at = time.monotonic()
-
     def _get(self, path: str, params: dict | None = None, retry_on_429: bool = True) -> dict | None:
         if not self.api_key or not self._check_budget():
             return None
-        self._throttle()
+        _shared_throttle()
         try:
             resp = requests.get(f"{BASE_URL}{path}", headers=self._headers(), params=params or {}, timeout=10)
             if resp.status_code == 429 and retry_on_429:
                 # Один повтор с паузой подольше — если лимит всё равно словили
-                # несмотря на троттлинг (например, после долгого простоя между
-                # циклами счётчик сбился), даём API отдышаться и пробуем ещё раз.
-                time.sleep(1.0)
-                self._last_request_at = time.monotonic()
+                # несмотря на общий троттлер (например, всплеск от другого
+                # потока в этот же момент), даём API отдышаться.
+                time.sleep(1.5)
                 resp = requests.get(f"{BASE_URL}{path}", headers=self._headers(), params=params or {}, timeout=10)
             if resp.status_code != 200:
                 print(f"[thestatsapi-pressure] HTTP {resp.status_code} на {path}: {resp.text[:150]}", flush=True)
