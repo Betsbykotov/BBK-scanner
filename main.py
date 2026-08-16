@@ -14,7 +14,7 @@ from providers import MockProvider, OddscorpProvider, ProviderError, TheOddsApiP
 from sportmonks_provider import SportmonksProvider
 from pressure_detector import detect_pressure_alerts
 from pressure_card import generate_pressure_card
-import oddspapi_provider
+import thestatsapi_provider as oddspapi_provider
 
 # Карточка генерируется только для самых сильных PRESSURE-алертов —
 # остальные уходят как обычно, текстом. Регулируется тут, пока нет
@@ -23,7 +23,7 @@ REPORT_CARD_MIN_SCORE = 50.0
 
 
 def _predicted_side_for_sharp_check(alert: Alert) -> str | None:
-    """Определяет 'home'/'draw'/'away' для сверки с Pinnacle через OddsPapi.
+    """Определяет 'home'/'draw'/'away' для сверки с Pinnacle через TheStatsAPI.
     Работает ТОЛЬКО для рынка h2h (исход матча) — для тоталов/фор/прочих
     рынков возвращает None, проверка по Pinnacle для них не делается,
     т.к. сравнение home/draw/away там не имеет смысла.
@@ -43,9 +43,9 @@ def _predicted_side_for_sharp_check(alert: Alert) -> str | None:
 
 
 def _try_sharp_confirmation(alert: Alert, db_path: str) -> dict | None:
-    """Пытается получить sharp-подтверждение от OddsPapi/Pinnacle для топовых
-    сигналов. Дневной бюджет запросов регулируется внутри oddspapi_provider
-    (ODDSPAPI_DAILY_BUDGET) — как только он исчерпан, функция просто вернёт
+    """Пытается получить sharp-подтверждение от TheStatsAPI/Pinnacle для топовых
+    сигналов. Дневной бюджет запросов регулируется внутри thestatsapi_provider
+    (THESTATSAPI_DAILY_BUDGET) — как только он исчерпан, функция просто вернёт
     None для всех последующих алертов текущего дня.
 
     Любая ошибка -> None, алерт всё равно уходит как обычно, просто без
