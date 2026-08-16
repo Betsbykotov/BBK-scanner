@@ -12,6 +12,7 @@ from models import Alert
 from notifier import TelegramNotifier, format_alert
 from providers import MockProvider, OddscorpProvider, ProviderError, TheOddsApiProvider, list_sports
 from sportmonks_provider import SportmonksProvider
+from sportsgameodds_provider import SportsGameOddsProvider
 from pressure_detector import detect_pressure_alerts
 from pressure_card import generate_pressure_card
 import thestatsapi_provider as oddspapi_provider
@@ -152,7 +153,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="BBK Scanner MVP")
     parser.add_argument(
         "--provider",
-        choices=("mock", "odds-api", "oddscorp"),
+        choices=("mock", "odds-api", "oddscorp", "sportsgameodds"),
         default="mock",
         help="Источник коэффициентов",
     )
@@ -431,6 +432,13 @@ def main() -> int:
                 regions=settings.odds_region,
                 markets=settings.markets,
                 odds_format=settings.odds_format,
+            )
+        elif args.provider == "sportsgameodds":
+            sgo_key = __import__("os").environ.get("SPORTSGAMEODDS_API_KEY", "")
+            sgo_leagues = __import__("os").environ.get("SPORTSGAMEODDS_LEAGUES", "")
+            provider = SportsGameOddsProvider(
+                api_key=sgo_key,
+                league_ids=tuple(l.strip() for l in sgo_leagues.split(",") if l.strip()),
             )
         else:
             provider = OddscorpProvider(
