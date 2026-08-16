@@ -29,6 +29,8 @@ from datetime import datetime, timezone
 
 import requests
 
+from thestatsapi_rate_limiter import throttle as _shared_throttle
+
 BASE_URL = "https://api.thestatsapi.com/api"
 API_KEY = os.environ.get("THESTATSAPI_KEY", "")
 DAILY_BUDGET = int(os.environ.get("THESTATSAPI_DAILY_BUDGET", "2000"))
@@ -69,6 +71,7 @@ def _headers() -> dict:
 def _get(path: str, params: dict | None = None) -> dict | None:
     if not _check_and_consume_budget():
         return None
+    _shared_throttle()
     try:
         resp = requests.get(f"{BASE_URL}{path}", headers=_headers(), params=params or {}, timeout=10)
         if resp.status_code != 200:
@@ -88,18 +91,34 @@ def _find_competition_id(league_name: str) -> str | None:
     if league_name in _competition_cache:
         return _competition_cache[league_name]
 
-    # Убираем префикс страны формата "England. Premier League" -> "Premier League",
-    # т.к. поиск у них по name, а не по "страна. лига".
-    search_term = league_name.split(".", 1)[-1].strip() if "." in league_name else league_name
+    # OddsCorp отдаёт лиги в формате "England. Premier League" -> разбиваем
+    # на страну и название, чтобы искать точнее и фильтровать кандидатов
+    # по стране (иначе "Premier League" находит канадскую/египетскую лигу
+    # раньше английской).
+    country_hint = None
+    search_term = league_name
+    if "." in league_name:
+        parts = league_name.split(".", 1)
+        country_hint = parts[0].strip().lower()
+        search_term = parts[1].strip()
 
-    data = _get("/football/competitions", {"search": search_term, "per_page": 5})
+    data = _get("/football/competitions", {"search": search_term, "per_page": 10})
     comp_id = None
     if data and data.get("data"):
-        comp_id = data["data"][0].get("id")
+        candidates = data["data"]
+        if country_hint:
+            matched = [
+                c for c in candidates
+                if country_hint in str(c.get("country") or "").strip().lower()
+            ]
+            if matched:
+                comp_id = matched[0].get("id")
+        if comp_id is None:
+            comp_id = candidates[0].get("id")
 
     _competition_cache[league_name] = comp_id
     if comp_id is None:
-        _log(f"соревнование не найдено: {league_name!r} (поиск: {search_term!r})")
+        _log(f"соревнование не найдено: {league_name!r} (поиск: {search_term!r}, страна: {country_hint!r})")
     return comp_id
 
 
