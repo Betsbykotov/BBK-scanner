@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timedelta, timezone
+import sqlite3
 import sys
 import time
 
@@ -183,7 +184,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _log(message: str) -> None:
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-    print(f"[{timestamp}] {message}")
+    print(f"[{timestamp}] {message}", flush=True)
 
 
 def _dedup_alerts(db: OddsDatabase, alerts: list[Alert], cooldown_minutes: int) -> list[Alert]:
@@ -517,7 +518,15 @@ def main() -> int:
                 )
                 run_pressure_cycle(sportmonks_provider, db, notifier, settings.cooldown_minutes, settings.league_blacklist)
                 run_pressure_cycle_v3(thestatsapi_pressure_provider, db, notifier, settings.cooldown_minutes)
-            except (ProviderError, RuntimeError, ValueError) as exc:
+            # ФИКС (17.08.2026): добавлен sqlite3.Error (в частности
+            # sqlite3.OperationalError "database is locked", которое не
+            # является ни ProviderError, ни RuntimeError, ни ValueError) —
+            # раньше такая ошибка либо тихо крашила процесс без записи в
+            # лог, либо (при конкурентных блокировках на файловой системе
+            # контейнера) эффективно вешала цикл на неопределённое время.
+            # Теперь она перехватывается наравне с остальными, логируется
+            # и цикл продолжает жить дальше на следующей итерации.
+            except (ProviderError, RuntimeError, ValueError, sqlite3.Error) as exc:
                 _log(f"Ошибка в цикле сканирования: {exc}")
             except KeyboardInterrupt:
                 _log("Остановлено пользователем.")
@@ -531,4 +540,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
- 
