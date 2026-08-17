@@ -63,16 +63,44 @@ CREATE INDEX IF NOT EXISTS idx_pressure_lookup
 ON pressure_snapshots(fixture_id, captured_at);
 """
 
+# --- ФИКС (17.08.2026, зависание сканера на ~3 часа без единой строки в
+# логах и без traceback) ---
+# Диагноз: OddsDatabase.connect() открывал sqlite3.connect(self.path) БЕЗ
+# параметра timeout — по умолчанию это 5 секунд, после чего sqlite3 кидает
+# sqlite3.OperationalError("database is locked"). Это исключение НЕ входит
+# в except (ProviderError, RuntimeError, ValueError) в главном цикле
+# main.py, поэтому либо крашило процесс без явного рестарта Railway, либо
+# (что вероятнее при частой конкурентной записи из run_cycle/
+# run_pressure_cycle/run_pressure_cycle_v3, каждый из которых открывает
+# СВОЁ соединение на запись почти одновременно) блокировка на уровне
+# файловой системы контейнера держалась куда дольше 5 сек, создавая
+# ощущение полного зависания.
+#
+# Решение:
+# 1. DB_TIMEOUT_SECONDS — теперь connect() ждёт снятия блокировки явно
+#    заданное время вместо дефолтных 5 сек, и это настраиваемо.
+# 2. WAL (Write-Ahead Logging) — стандартный режим SQLite для конкурентного
+#    доступа: читатели не блокируют писателя и наоборот, что резко снижает
+#    частоту "database is locked" при нескольких открытых соединениях
+#    (odds_snapshots / sent_alerts / pressure_snapshots пишутся из разных
+#    функций в рамках одного цикла).
+# 3. busy_timeout PRAGMA — дублирует Python-таймаут на уровне самого
+#    SQLite-движка, страхует от блокировок внутри одного connect().
+DB_TIMEOUT_SECONDS = 15.0
+
 
 class OddsDatabase:
-    def __init__(self, path: str):
+    def __init__(self, path: str, timeout_seconds: float = DB_TIMEOUT_SECONDS):
         self.path = path
+        self.timeout_seconds = timeout_seconds
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
             conn.executescript(SCHEMA)
 
     def connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.path)
+        conn = sqlite3.connect(self.path, timeout=self.timeout_seconds)
+        conn.execute(f"PRAGMA busy_timeout = {int(self.timeout_seconds * 1000)}")
         conn.row_factory = sqlite3.Row
         return conn
 
