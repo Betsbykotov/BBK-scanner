@@ -28,6 +28,25 @@ xG на данный момент матча, что и нужно для live-�
    превращается в "живых матчей нет" (раньше _get возвращал None при
    ошибке и код молча делал return [] — на верхнем уровне это выглядело
    идентично случаю "матчей действительно нет").
+
+--- ИЗМЕНЕНИЯ (17.08.2026, фикс "мёртвых" лиг без live-stats) ---
+4. Обнаружено (см. логи 16.08 20:30-23:20 UTC): часть матчей, которые
+   TheStatsAPI отдаёт в /football/matches?status=live, стабильно (часами,
+   не разово) отвечают 404 "Live match statistics not found" или 409
+   "Match is not live" на /live-stats — то есть список live-матчей и
+   реальное наличие live-stats в системе TheStatsAPI рассинхронизированы
+   для некоторых турниров. Раньше такие матчи просто тихо скипались
+   каждый цикл заново — то есть один и тот же "мёртвый" матч/лига мог
+   долбиться раз в минуту часами впустую, съедая бюджет запросов и
+   создавая шум в логах, из-за которого выглядело, будто провайдер завис.
+5. Добавлен кеш _dead_competition_cache: если для конкретной лиги
+   (competition_id) live-stats дал 404 — запоминаем на 30 минут и больше
+   не дёргаем /live-stats для матчей этой лиги в этом окне. 409 в кеш
+   не попадает — это может быть честный рассинхрон по времени (матч
+   ещё не начался/уже кончился), а не системное отсутствие данных.
+6. Отдельный явный warning-лог, если ВСЕ live-матчи цикла были из
+   закешированных "мёртвых" лиг — чтобы сразу было видно причину
+   "молчания", а не гадать между лимитом/багом/затишьем.
 """
 
 from __future__ import annotations
@@ -53,6 +72,12 @@ MAX_USEFUL_MINUTE = 80
 # а не долбим оставшиеся матчи в стену.
 MAX_CONSECUTIVE_RATE_LIMITS = 3
 
+# Сколько секунд держим лигу в "мёртвом" кеше после 404 на /live-stats.
+# 30 минут — компромисс: достаточно, чтобы не долбить лигу весь вечер
+# впустую, но недостаточно долго, чтобы навсегда похоронить лигу, которая
+# просто временно не публиковала статистику (например, между таймами).
+DEAD_COMPETITION_TTL_SECONDS = 30 * 60
+
 
 def _log(message: str) -> None:
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -68,6 +93,9 @@ class ThestatsapiPressureProvider:
         self._budget_used = 0
         self._budget_date = None
         self._competition_name_cache: dict[str, tuple[str, str]] = {}  # comp_id -> (name, country)
+        # comp_id -> unix timestamp, до которого лига считается "мёртвой"
+        # (live-stats стабильно отдаёт 404 для матчей этой лиги).
+        self._dead_competition_cache: dict[str, float] = {}
 
     def _headers(self) -> dict:
         return {"Authorization": f"Bearer {self.api_key}"}
@@ -82,15 +110,36 @@ class ThestatsapiPressureProvider:
         self._budget_used += 1
         return True
 
-    def _get(self, path: str, params: dict | None = None, retry_on_429: bool = True) -> tuple[dict | None, bool]:
-        """Возвращает (данные, был_ли_rate_limit).
+    def _is_dead_competition(self, competition_id: str) -> bool:
+        expires_at = self._dead_competition_cache.get(competition_id)
+        if expires_at is None:
+            return False
+        if time.time() >= expires_at:
+            # TTL истёк — даём лиге ещё один шанс.
+            del self._dead_competition_cache[competition_id]
+            return False
+        return True
 
-        Второй элемент нужен, чтобы вызывающий код (get_live_pressure_data)
-        мог отличить "429 несмотря на ретрай" от прочих ошибок и включить
-        circuit breaker именно на rate limit, а не на любую сетевую икоту.
+    def _mark_dead_competition(self, competition_id: str) -> None:
+        if not competition_id:
+            return
+        was_already_dead = competition_id in self._dead_competition_cache
+        self._dead_competition_cache[competition_id] = time.time() + DEAD_COMPETITION_TTL_SECONDS
+        if not was_already_dead:
+            _log(
+                f"лига {competition_id} помечена как без live-stats поддержки "
+                f"(404 на /live-stats) — пропускаем её матчи на {DEAD_COMPETITION_TTL_SECONDS // 60} мин"
+            )
+
+    def _get(self, path: str, params: dict | None = None, retry_on_429: bool = True) -> tuple[dict | None, bool, int | None]:
+        """Возвращает (данные, был_ли_rate_limit, http_status).
+
+        http_status добавлен, чтобы вызывающий код мог отличить 404
+        (данных для этого матча/лиги в принципе нет) от прочих ошибок
+        и, в частности, занести лигу в кеш "мёртвых".
         """
         if not self.api_key or not self._check_budget():
-            return None, False
+            return None, False, None
         _shared_throttle()
         try:
             resp = requests.get(f"{BASE_URL}{path}", headers=self._headers(), params=params or {}, timeout=10)
@@ -103,21 +152,21 @@ class ThestatsapiPressureProvider:
                 resp = requests.get(f"{BASE_URL}{path}", headers=self._headers(), params=params or {}, timeout=10)
             if resp.status_code == 429:
                 _log(f"HTTP 429 на {path} (после ретрая) — лимит выжран")
-                return None, True
+                return None, True, 429
             if resp.status_code != 200:
                 _log(f"HTTP {resp.status_code} на {path}: {resp.text[:150]}")
-                return None, False
-            return resp.json(), False
+                return None, False, resp.status_code
+            return resp.json(), False, 200
         except requests.RequestException as exc:
             _log(f"сетевая ошибка на {path}: {exc}")
-            return None, False
+            return None, False, None
 
     def _competition_info(self, competition_id: str) -> tuple[str, str]:
         """Возвращает (название лиги, страна). Кешируется — соревнования не
         меняются в течение прогона, незачем дёргать API каждый цикл."""
         if competition_id in self._competition_name_cache:
             return self._competition_name_cache[competition_id]
-        data, _ = self._get(f"/football/competitions/{competition_id}")
+        data, _, _ = self._get(f"/football/competitions/{competition_id}")
         name, country = "", ""
         if data and data.get("data"):
             name = data["data"].get("name", "")
@@ -132,7 +181,7 @@ class ThestatsapiPressureProvider:
         if not self.api_key:
             return []
 
-        live_data, was_rate_limited = self._get("/football/matches", {"status": "live", "per_page": 50})
+        live_data, was_rate_limited, _ = self._get("/football/matches", {"status": "live", "per_page": 50})
         if not live_data:
             if was_rate_limited:
                 _log("не удалось получить список live-матчей — лимит выжран, пропускаем цикл")
@@ -144,6 +193,7 @@ class ThestatsapiPressureProvider:
         matches_raw = matches_raw[: self.MAX_MATCHES_PER_CYCLE]
         results: list[dict] = []
         consecutive_rate_limits = 0
+        skipped_dead_count = 0
 
         for m in matches_raw:
             if consecutive_rate_limits >= MAX_CONSECUTIVE_RATE_LIMITS:
@@ -157,9 +207,16 @@ class ThestatsapiPressureProvider:
             if not match_id:
                 continue
 
-            live_stats_data, rl1 = self._get(f"/football/matches/{match_id}/live-stats")
+            competition_id = m.get("competition_id", "")
+            if competition_id and self._is_dead_competition(competition_id):
+                skipped_dead_count += 1
+                continue
+
+            live_stats_data, rl1, status1 = self._get(f"/football/matches/{match_id}/live-stats")
             if not live_stats_data:
                 consecutive_rate_limits = consecutive_rate_limits + 1 if rl1 else 0
+                if status1 == 404 and competition_id:
+                    self._mark_dead_competition(competition_id)
                 continue
             consecutive_rate_limits = 0
 
@@ -185,7 +242,7 @@ class ThestatsapiPressureProvider:
             # по пайплайну.
             xg_h, xg_a = 0.0, 0.0
             if MIN_USEFUL_MINUTE <= minute <= MAX_USEFUL_MINUTE:
-                shotmap_data, rl2 = self._get(f"/football/matches/{match_id}/shotmap")
+                shotmap_data, rl2, _status2 = self._get(f"/football/matches/{match_id}/shotmap")
                 if shotmap_data:
                     consecutive_rate_limits = 0
                     live_xg = shotmap_data.get("np_xg_summary", {}).get("live", {})
@@ -194,7 +251,6 @@ class ThestatsapiPressureProvider:
                 elif rl2:
                     consecutive_rate_limits += 1
 
-            competition_id = m.get("competition_id", "")
             league_name, country_name = self._competition_info(competition_id) if competition_id else ("", "")
 
             home_team = m.get("home_team", {}).get("name", "?")
@@ -230,9 +286,18 @@ class ThestatsapiPressureProvider:
             })
 
         if not results and matches_raw:
-            _log(
-                f"live-матчей от API получено {len(matches_raw)}, но ни один не дал данных "
-                f"(rate limit / ошибки на уровне отдельных матчей — см. логи HTTP выше)"
-            )
+            if skipped_dead_count == len(matches_raw):
+                _log(
+                    f"live-матчей от API получено {len(matches_raw)}, но все {skipped_dead_count} — "
+                    f"из лиг без live-stats поддержки (закешировано как 'мёртвые', см. лог выше про "
+                    f"конкретные лиги). Это не лимит и не сбой — просто в моменте нет матчей из "
+                    f"покрытых лиг."
+                )
+            else:
+                _log(
+                    f"live-матчей от API получено {len(matches_raw)}, но ни один не дал данных "
+                    f"(rate limit / ошибки на уровне отдельных матчей — см. логи HTTP выше; "
+                    f"{skipped_dead_count} пропущено как заведомо 'мёртвые' лиги)"
+                )
 
         return results
